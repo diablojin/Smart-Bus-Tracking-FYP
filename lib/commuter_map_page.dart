@@ -22,6 +22,7 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
   // routeId -> busId -> position
   final Map<String, Map<String, LatLng>> _routeBusPositions = {};
   final Map<String, Map<String, DateTime>> _routeLastUpdates = {};
+  final Map<String, Map<String, String>> _routeBusStatus = {}; // routeId -> busId -> status
 
   // Demo routes (later can come from Supabase or config)
   final List<String> _routes = ['route_01', 'route_02'];
@@ -45,15 +46,23 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
         final routeId = location.routeId;
         final busId = location.busId;
         final pos = LatLng(location.lat, location.lng);
+        final status = location.status; // Capture status
+
+        print('🚌 COMMUTER: Received update for $busId on $routeId - Status: $status');
 
         setState(() {
           _routeBusPositions.putIfAbsent(routeId, () => {});
           _routeLastUpdates.putIfAbsent(routeId, () => {});
+          _routeBusStatus.putIfAbsent(routeId, () => {}); // Initialize status map
 
           _routeBusPositions[routeId]![busId] = pos;
           _routeLastUpdates[routeId]![busId] = location.timestamp;
+          _routeBusStatus[routeId]![busId] = status; // Save status
 
-          _focusedBusId ??= busId; // first bus on any route
+          print('🚌 COMMUTER: Saved status for $busId: ${_routeBusStatus[routeId]![busId]}');
+
+          // Fix: Auto-select first bus
+          if (_focusedBusId == null) _focusedBusId = busId;
         });
 
         // Auto-follow if this bus is on the selected route & focused
@@ -94,14 +103,35 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     final markers = busesOnRoute.entries.map((entry) {
       final busId = entry.key;
       final pos = entry.value;
+      
+      // Read the status for this bus
+      final status = _routeBusStatus[_selectedRouteId]?[busId] ?? 'In Service';
+      
+      print('🎨 COMMUTER: Building marker for $busId - Status: "$status"');
+      
+      // Determine marker color based on status
+      double markerHue;
+      if (status == 'Breakdown') {
+        markerHue = BitmapDescriptor.hueRed;
+        print('🎨 COMMUTER: Setting RED marker for $busId');
+      } else if (status == 'Delayed') {
+        markerHue = BitmapDescriptor.hueOrange;
+        print('🎨 COMMUTER: Setting ORANGE marker for $busId');
+      } else if (status == 'Full Capacity') {
+        markerHue = BitmapDescriptor.hueAzure;
+        print('🎨 COMMUTER: Setting BLUE marker for $busId');
+      } else {
+        markerHue = BitmapDescriptor.hueGreen;
+        print('🎨 COMMUTER: Setting GREEN marker for $busId (status was: "$status")');
+      }
 
       return Marker(
         markerId: MarkerId('bus_${_selectedRouteId}_$busId'),
         position: pos,
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+        icon: BitmapDescriptor.defaultMarkerWithHue(markerHue),
         infoWindow: InfoWindow(
           title: 'Bus $busId',
-          snippet: 'Route: $_selectedRouteId',
+          snippet: 'Status: $status',
         ),
         onTap: () {
           setState(() {
@@ -116,6 +146,28 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     final focusedLastUpdate = (focusedBusId != null)
         ? (_routeLastUpdates[_selectedRouteId]?[focusedBusId])
         : null;
+    
+    // Get the status of the focused bus
+    final focusedStatus = (focusedBusId != null)
+        ? (_routeBusStatus[_selectedRouteId]?[focusedBusId] ?? 'In Service')
+        : 'In Service';
+    
+    // Determine badge color based on status
+    Color badgeColor;
+    String badgeText;
+    if (focusedStatus == 'Breakdown') {
+      badgeColor = Colors.red;
+      badgeText = 'Breakdown';
+    } else if (focusedStatus == 'Delayed') {
+      badgeColor = Colors.orange;
+      badgeText = 'Delayed';
+    } else if (focusedStatus == 'Full Capacity') {
+      badgeColor = Colors.blue;
+      badgeText = 'Full Capacity';
+    } else {
+      badgeColor = Colors.green;
+      badgeText = 'Live';
+    }
 
     final activeBusIds = busesOnRoute.keys.toList();
 
@@ -220,17 +272,27 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
                             vertical: 4,
                           ),
                           decoration: BoxDecoration(
-                            color: Colors.green,
+                            color: badgeColor,
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
-                            children: const [
-                              Icon(Icons.wifi, size: 12, color: Colors.white),
-                              SizedBox(width: 4),
+                            children: [
+                              Icon(
+                                focusedStatus == 'Breakdown' 
+                                    ? Icons.warning 
+                                    : focusedStatus == 'Delayed'
+                                        ? Icons.schedule
+                                        : focusedStatus == 'Full Capacity'
+                                            ? Icons.people
+                                            : Icons.wifi,
+                                size: 12,
+                                color: Colors.white,
+                              ),
+                              const SizedBox(width: 4),
                               Text(
-                                'Live',
-                                style: TextStyle(
+                                badgeText,
+                                style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 12,
                                   fontWeight: FontWeight.bold,
@@ -245,7 +307,9 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
                   
                   // Status line
                   Text(
-                    'Status: Live tracking: ${activeBusIds.length} bus(es) on $_selectedRouteId',
+                    focusedBusId != null
+                        ? 'Status: $focusedStatus • ${activeBusIds.length} bus(es) on $_selectedRouteId'
+                        : 'Status: Waiting for data • ${activeBusIds.length} bus(es) on $_selectedRouteId',
                     style: TextStyle(fontSize: 13, color: Colors.grey[700]),
                   ),
                   const SizedBox(height: 8),

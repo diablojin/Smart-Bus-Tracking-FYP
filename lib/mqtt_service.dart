@@ -214,6 +214,9 @@ class MqttService {
           busId = parts.length >= 4 ? parts[3] : 'unknown_bus';
         }
 
+        final statusFromData = data['status'] as String? ?? 'In Service';
+        print('📦 MQTT: Raw status from JSON: "${data['status']}" -> Parsed: "$statusFromData"');
+
         final location = BusLocation(
           busId: busId,
           routeId: routeId,
@@ -222,11 +225,12 @@ class MqttService {
           timestamp: DateTime.fromMillisecondsSinceEpoch(
             (data['timestamp'] as int) * 1000,
           ),
-          status: data['status'] as String? ?? 'In Service',
+          status: statusFromData,
         );
 
         print('MQTT: Parsed BusLocation: '
             'routeId=${location.routeId}, busId=${location.busId}, '
+            'status="${location.status}", '
             'lat=${location.lat}, lng=${location.lng}');
 
         _busLocationController.add(location);
