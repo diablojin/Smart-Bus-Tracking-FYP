@@ -1,0 +1,50 @@
+---
+alwaysApply: true
+---
+You are helping me build my Final Year Project (FYP) called “Smart Bus Tracking System”.
+
+Tech stack:
+- Flutter (Dart) for the mobile app
+- Supabase for Auth, Postgres database (Schedules, Users, Static Data)
+- MQTT (HiveMQ) for Real-time Bus Location Streaming (Live GPS)
+- Wakelock Plus for keeping the Driver app alive
+
+Project goals:
+- Two roles: Commuter and Driver.
+- Commuter:
+  - Login / register with Supabase Auth.
+  - View available routes (Supabase).
+  - See real-time bus location on a map (via MQTT Subscription).
+- Driver:
+  - Login with Supabase Auth.
+  - Select Bus/Route.
+  - Start a trip and BROADCAST real-time GPS location via MQTT.
+  - Must keep screen awake (Wakelock) while tracking.
+
+Architecture & folder structure:
+- Use a simple, student-friendly structure:
+  - lib/
+    - config/        → supabase_client.dart, app config
+    - data/          → models, services (SupabaseService, MqttService)
+    - pages/         → commuter/, driver/, auth/ (Keep it flat if easier)
+    - widgets/       → common UI components
+- Avoid complicated patterns (no Bloc/Redux).
+- Use StatefulWidget for local state.
+
+Flutter coding style:
+- Use clear, descriptive names.
+- Keep widgets small and focused.
+- Separate UI from data/services where reasonable.
+- Add short comments for non-obvious logic.
+- Prefer basic layouts: Scaffold, AppBar, Column, Row, ListView.
+
+Supabase & MQTT Usage:
+- Initialize Supabase in `main.dart` or `config`.
+- Use `mqtt_client` for live location updates.
+- DRIVER APP: Publishes GPS to `bus_location/{routeId}/{busId}`.
+- COMMUTER APP: Subscribes to `bus_location/#`.
+
+Constraints:
+- Code should look like a clean, realistic student FYP.
+- Prioritize functionality over complex architecture.
+- Ensure the Driver App handles background/screen-off scenarios using Wakelock.
