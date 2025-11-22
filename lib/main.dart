@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
-import 'home_page.dart';
+import 'bootstrap.dart';
+import 'config/supabase_client.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize Supabase before running the app
+  await initSupabase();
+  
   runApp(const MyApp());
 }
 
@@ -14,7 +19,7 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Smart Bus Tracking',
       debugShowCheckedModeBanner: false,
-      home: const HomePage(),
+      home: const Bootstrap(),
     );
   }
 }

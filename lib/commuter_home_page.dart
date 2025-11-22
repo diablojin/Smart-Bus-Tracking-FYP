@@ -1,9 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-
-import 'auth_page.dart';
-
-final supabase = Supabase.instance.client;
+import 'commuter_map_page.dart';
 
 class CommuterHomePage extends StatelessWidget {
   const CommuterHomePage({super.key});
@@ -12,32 +8,31 @@ class CommuterHomePage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Commuter Home Page'),
+        title: const Text('Commuter Home'),
         centerTitle: true,
       ),
-
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Text(
-              'Commuter Home Page',
-              style: TextStyle(fontSize: 22),
-            ),
-
+            const Icon(Icons.map, size: 80, color: Colors.green),
             const SizedBox(height: 20),
-
-            ElevatedButton(
-              onPressed: () async {
-                await supabase.auth.signOut();
-
-                if (!context.mounted) return;
-
+            const Text(
+              'Track Your Bus',
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 40),
+            ElevatedButton.icon(
+              onPressed: () {
                 Navigator.of(context).pushReplacement(
-                  MaterialPageRoute(builder: (_) => const AuthPage()),
+                  MaterialPageRoute(builder: (_) => const CommuterMapPage()),
                 );
               },
-              child: const Text('Log Out'),
+              icon: const Icon(Icons.location_on),
+              label: const Text('View Bus Locations'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+              ),
             ),
           ],
         ),

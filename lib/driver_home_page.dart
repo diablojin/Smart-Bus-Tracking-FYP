@@ -1,9 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-
-import 'auth_page.dart';
-
-final supabase = Supabase.instance.client;
+import 'driver_page.dart';
 
 class DriverHomePage extends StatelessWidget {
   const DriverHomePage({super.key});
@@ -12,27 +8,31 @@ class DriverHomePage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Driver Home Page'),
+        title: const Text('Driver Home'),
         centerTitle: true,
       ),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Text(
-              'Driver Home Page',
-              style: TextStyle(fontSize: 22),
-            ),
+            const Icon(Icons.directions_bus, size: 80, color: Colors.blue),
             const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: () async {
-                await supabase.auth.signOut();
-                if (!context.mounted) return;
+            const Text(
+              'Driver Dashboard',
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 40),
+            ElevatedButton.icon(
+              onPressed: () {
                 Navigator.of(context).pushReplacement(
-                  MaterialPageRoute(builder: (_) => const AuthPage()),
+                  MaterialPageRoute(builder: (_) => const DriverPage()),
                 );
               },
-              child: const Text('Log Out'),
+              icon: const Icon(Icons.gps_fixed),
+              label: const Text('Start Trip'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+              ),
             ),
           ],
         ),
