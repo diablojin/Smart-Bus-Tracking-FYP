@@ -32,8 +32,8 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
 
   // Route name mapping for display
   final Map<String, String> _routeNames = {
-    'route_01': 'Jln Dataran → Jln Tun Sambanthan',
-    'route_02': 'KLCC → Pavilion KL',
+    'route_01': 'Wangsa Maju → TARUMT',
+    'route_02': 'Aeon Big Danau Kota → Setapak Central',
   };
 
   String? _focusedBusId;
@@ -41,26 +41,163 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
   // Destination point (KL Sentral) for ETA calculation
   final LatLng _destination = const LatLng(3.1335, 101.6868);
 
-  // Route 01 polyline coordinates (High-resolution GPS tracking - 9 points)
+  // Route 01 polyline coordinates (Actual GPS tracking - 60 points)
   final List<LatLng> _route01Points = const [
-    LatLng(3.14587, 101.69319),      // Start point (northernmost)
-    LatLng(3.1448103, 101.6934007),  
-    LatLng(3.1437189, 101.6931108),  
-    LatLng(3.1426396, 101.6929596),  
-    LatLng(3.1415967, 101.6931696),  
-    LatLng(3.1407582, 101.6939083),  
-    LatLng(3.1406888, 101.6943517),  
-    LatLng(3.1406393, 101.6945889),  
-    LatLng(3.14064, 101.69458),      // End point (southernmost)
+    LatLng(3.2052117, 101.7319433),
+    LatLng(3.2056799, 101.7313395),
+    LatLng(3.2061699, 101.7307299),
+    LatLng(3.2065508, 101.7302284),
+    LatLng(3.206924, 101.7298496),
+    LatLng(3.2071134, 101.7296231),
+    LatLng(3.2072935, 101.7293998),
+    LatLng(3.2074943, 101.7291421),
+    LatLng(3.2076798, 101.728934),
+    LatLng(3.2078702, 101.7287295),
+    LatLng(3.2080998, 101.7285106),
+    LatLng(3.208305, 101.7282949),
+    LatLng(3.20851, 101.7280799),
+    LatLng(3.2087103, 101.7278603),
+    LatLng(3.2089051, 101.7278338),
+    LatLng(3.2090451, 101.7279732),
+    LatLng(3.2092199, 101.7281496),
+    LatLng(3.2094001, 101.7283033),
+    LatLng(3.2095817, 101.7284567),
+    LatLng(3.2097666, 101.7286083),
+    LatLng(3.209955, 101.7287532),
+    LatLng(3.2101305, 101.7288902),
+    LatLng(3.2103376, 101.7290545),
+    LatLng(3.2105399, 101.7291833),
+    LatLng(3.2106194, 101.7290925),
+    LatLng(3.2107403, 101.72888),
+    LatLng(3.2108817, 101.7286733),
+    LatLng(3.2110395, 101.7284506),
+    LatLng(3.2112076, 101.7285302),
+    LatLng(3.2113918, 101.72863),
+    LatLng(3.2116089, 101.7287511),
+    LatLng(3.211795, 101.728855),
+    LatLng(3.2119687, 101.728947),
+    LatLng(3.2121569, 101.7290399),
+    LatLng(3.2123401, 101.7291466),
+    LatLng(3.2125202, 101.72925),
+    LatLng(3.2127084, 101.7293433),
+    LatLng(3.212908, 101.7294513),
+    LatLng(3.2130933, 101.729555),
+    LatLng(3.2132687, 101.7296519),
+    LatLng(3.2134341, 101.7297371),
+    LatLng(3.2136491, 101.7298527),
+    LatLng(3.2138236, 101.7299519),
+    LatLng(3.2140067, 101.7300583),
+    LatLng(3.2141804, 101.7301601),
+    LatLng(3.2143798, 101.7302499),
+    LatLng(3.2145456, 101.7303826),
+    LatLng(3.2146674, 101.7303222),
+    LatLng(3.2147903, 101.7302199),
+    LatLng(3.21489, 101.7300849),
+    LatLng(3.2149932, 101.7299306),
+    LatLng(3.2150702, 101.7297784),
+    LatLng(3.2151208, 101.7296394),
+    LatLng(3.2151569, 101.7294589),
+    LatLng(3.2151559, 101.7292948),
+    LatLng(3.2151431, 101.729141),
+    LatLng(3.2151122, 101.7289796),
+    LatLng(3.2150553, 101.7288022),
+    LatLng(3.2149951, 101.7286384),
+    LatLng(3.2149492, 101.7285282),
   ];
 
-  // Route 02 polyline coordinates (KLCC to Pavilion)
+  // Route 02 polyline coordinates (Actual GPS tracking - 33 points)
   final List<LatLng> _route02Points = const [
-    LatLng(3.1579, 101.7116), // KLCC
-    LatLng(3.1550, 101.7130),
-    LatLng(3.1520, 101.7140),
-    LatLng(3.1485, 101.7145), // Pavilion
+    LatLng(3.204415, 101.7157183),
+    LatLng(3.2043605, 101.7157135),
+    LatLng(3.2042001, 101.71583),
+    LatLng(3.2040417, 101.7159483),
+    LatLng(3.2038801, 101.7160699),
+    LatLng(3.2037362, 101.7161592),
+    LatLng(3.2035602, 101.7162583),
+    LatLng(3.2033803, 101.7163599),
+    LatLng(3.2031982, 101.7164316),
+    LatLng(3.2030103, 101.7165199),
+    LatLng(3.2028563, 101.716622),
+    LatLng(3.2027064, 101.716732),
+    LatLng(3.2025338, 101.716858),
+    LatLng(3.2023831, 101.7169686),
+    LatLng(3.2022378, 101.7170785),
+    LatLng(3.2020706, 101.7172098),
+    LatLng(3.2019049, 101.7173166),
+    LatLng(3.2017467, 101.7174334),
+    LatLng(3.2015653, 101.7175715),
+    LatLng(3.2014099, 101.7176918),
+    LatLng(3.201255, 101.7178118),
+    LatLng(3.2010933, 101.7179351),
+    LatLng(3.2009623, 101.7180342),
+    LatLng(3.200805, 101.7181517),
+    LatLng(3.2007096, 101.7183105),
+    LatLng(3.2009437, 101.7186073),
+    LatLng(3.2011325, 101.7188609),
+    LatLng(3.2013401, 101.7191617),
+    LatLng(3.2015483, 101.7194633),
+    LatLng(3.2017404, 101.7197553),
+    LatLng(3.2019794, 101.7200535),
+    LatLng(3.2022119, 101.7203284),
+    LatLng(3.2023424, 101.720483),
   ];
+
+  /// Build Route 01 bus stop markers
+  Set<Marker> _getRoute01Stops() {
+    return {
+      Marker(
+        markerId: const MarkerId('stop_route01_start'),
+        position: _route01Points.first, // Wangsa Maju
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
+        infoWindow: const InfoWindow(
+          title: '🚏 Wangsa Maju',
+          snippet: 'Route 01 Start',
+        ),
+      ),
+      Marker(
+        markerId: const MarkerId('stop_route01_middle'),
+        position: _route01Points[30], // Middle point (~Taman Bunga Raya)
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
+        infoWindow: const InfoWindow(
+          title: '🚏 Taman Bunga Raya',
+          snippet: 'Route 01 Stop',
+        ),
+      ),
+      Marker(
+        markerId: const MarkerId('stop_route01_end'),
+        position: _route01Points.last, // TARUMT Main Gate
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
+        infoWindow: const InfoWindow(
+          title: '🚏 TARUMT Main Gate',
+          snippet: 'Route 01 End',
+        ),
+      ),
+    };
+  }
+
+  /// Build Route 02 bus stop markers
+  Set<Marker> _getRoute02Stops() {
+    return {
+      Marker(
+        markerId: const MarkerId('stop_route02_start'),
+        position: _route02Points.first, // Aeon Big Danau Kota
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
+        infoWindow: const InfoWindow(
+          title: '🚏 Aeon Big Danau Kota',
+          snippet: 'Route 02 Start',
+        ),
+      ),
+      Marker(
+        markerId: const MarkerId('stop_route02_end'),
+        position: _route02Points.last, // Setapak Central
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
+        infoWindow: const InfoWindow(
+          title: '🚏 Setapak Central',
+          snippet: 'Route 02 End',
+        ),
+      ),
+    };
+  }
 
   @override
   void initState() {
@@ -291,6 +428,13 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     }
 
     final activeBusIds = busesOnRoute.keys.toList();
+
+    // Add bus stop markers based on selected route
+    if (_selectedRouteId == 'route_01') {
+      markers.addAll(_getRoute01Stops());
+    } else if (_selectedRouteId == 'route_02') {
+      markers.addAll(_getRoute02Stops());
+    }
 
     // Build polylines for the selected route
     final Set<Polyline> polylines = {};

@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'mqtt_service.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -31,8 +33,8 @@ class _DriverPageState extends State<DriverPage> {
   
   // Route name mapping for display
   final Map<String, String> _routeNames = {
-    'route_01': 'Jln Dataran → Jln Tun Sambanthan',
-    'route_02': 'KLCC → Pavilion KL',
+    'route_01': 'Wangsa Maju → TARUMT',
+    'route_02': 'Aeon Big Danau Kota → Setapak Central',
   };
 
   @override
@@ -114,6 +116,23 @@ class _DriverPageState extends State<DriverPage> {
     final hasPermission = await _ensureLocationPermission();
     if (!hasPermission) return;
 
+    // Get storage directory for route logging
+    Directory? dir;
+    try {
+      dir = await getExternalStorageDirectory();
+      if (dir != null) {
+        final logFile = File('${dir.path}/route_log.txt');
+        // Clear old logs - start fresh
+        if (await logFile.exists()) {
+          await logFile.delete();
+          print('🗑️ Old route_log.txt deleted');
+        }
+        print('📁 Route logging to: ${logFile.path}');
+      }
+    } catch (e) {
+      print('⚠️ Could not setup route logging: $e');
+    }
+
     setState(() {
       _isTracking = true;
       _status = 'Tracking started for $busId on $routeId';
@@ -128,9 +147,19 @@ class _DriverPageState extends State<DriverPage> {
     _positionSub = Geolocator.getPositionStream(
       locationSettings: locationSettings,
     ).listen((Position position) async {
-
-      print('LatLng(${position.latitude}, ${position.longitude}),');
       _lastPosition = position;
+
+      // Log coordinates to file
+      if (dir != null) {
+        try {
+          final logLine = 'LatLng(${position.latitude}, ${position.longitude}),\n';
+          final logFile = File('${dir.path}/route_log.txt');
+          await logFile.writeAsString(logLine, mode: FileMode.append);
+          print('📝 Logged: $logLine'.trim());
+        } catch (e) {
+          print('⚠️ Failed to log coordinate: $e');
+        }
+      }
 
       await _mqttService.publishLocation(
         routeId: routeId,
