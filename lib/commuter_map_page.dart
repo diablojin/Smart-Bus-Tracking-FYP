@@ -30,6 +30,27 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
 
   String? _focusedBusId;
 
+  // Route 01 polyline coordinates (High-resolution GPS tracking - 9 points)
+  final List<LatLng> _route01Points = const [
+    LatLng(3.14587, 101.69319),      // Start point (northernmost)
+    LatLng(3.1448103, 101.6934007),  
+    LatLng(3.1437189, 101.6931108),  
+    LatLng(3.1426396, 101.6929596),  
+    LatLng(3.1415967, 101.6931696),  
+    LatLng(3.1407582, 101.6939083),  
+    LatLng(3.1406888, 101.6943517),  
+    LatLng(3.1406393, 101.6945889),  
+    LatLng(3.14064, 101.69458),      // End point (southernmost)
+  ];
+
+  // Route 02 polyline coordinates (KLCC to Pavilion)
+  final List<LatLng> _route02Points = const [
+    LatLng(3.1579, 101.7116), // KLCC
+    LatLng(3.1550, 101.7130),
+    LatLng(3.1520, 101.7140),
+    LatLng(3.1485, 101.7145), // Pavilion
+  ];
+
   @override
   void initState() {
     super.initState();
@@ -171,6 +192,32 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
 
     final activeBusIds = busesOnRoute.keys.toList();
 
+    // Build polylines for the selected route
+    final Set<Polyline> polylines = {};
+    if (_selectedRouteId == 'route_01') {
+      polylines.add(
+        Polyline(
+          polylineId: const PolylineId('route_01_path'),
+          points: _route01Points,
+          color: Colors.blueAccent,
+          width: 5,
+          startCap: Cap.roundCap,
+          endCap: Cap.roundCap,
+        ),
+      );
+    } else if (_selectedRouteId == 'route_02') {
+      polylines.add(
+        Polyline(
+          polylineId: const PolylineId('route_02_path'),
+          points: _route02Points,
+          color: Colors.deepPurpleAccent,
+          width: 5,
+          startCap: Cap.roundCap,
+          endCap: Cap.roundCap,
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(title: const Text('Commuter View')),
       body: Stack(
@@ -181,6 +228,7 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
               zoom: 14,
             ),
             markers: markers,
+            polylines: polylines,
             onMapCreated: (controller) {
               _mapController = controller;
             },

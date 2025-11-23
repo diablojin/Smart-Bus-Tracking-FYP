@@ -122,6 +122,8 @@ class _DriverPageState extends State<DriverPage> {
     _positionSub = Geolocator.getPositionStream(
       locationSettings: locationSettings,
     ).listen((Position position) async {
+
+      print('LatLng(${position.latitude}, ${position.longitude}),');
       _lastPosition = position;
 
       await _mqttService.publishLocation(
