@@ -16,6 +16,7 @@ class CommuterMapPage extends StatefulWidget {
 class _CommuterMapPageState extends State<CommuterMapPage> {
   final MqttService _mqttService = MqttService();
   StreamSubscription? _sub;
+  Timer? _cleanupTimer;
 
   GoogleMapController? _mapController;
   final LatLng _initialCameraPos = const LatLng(3.1390, 101.6869); // KL
@@ -65,6 +66,26 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
   void initState() {
     super.initState();
     _initMqtt();
+    
+    // Start periodic timer to refresh UI and check for stale buses
+    _cleanupTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      if (mounted) {
+        setState(() {
+          // This forces a rebuild to check timestamps
+          // Clean up focused bus if it's stale
+          if (_focusedBusId != null) {
+            final lastUpdate = _routeLastUpdates[_selectedRouteId]?[_focusedBusId];
+            if (lastUpdate != null) {
+              final staleness = DateTime.now().difference(lastUpdate).inSeconds;
+              if (staleness > 60) {
+                // Ghost bus detected, reset focus
+                _focusedBusId = null;
+              }
+            }
+          }
+        });
+      }
+    });
   }
 
   Future<void> _initMqtt() async {
@@ -109,6 +130,7 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
   @override
   void dispose() {
     _sub?.cancel();
+    _cleanupTimer?.cancel();
     super.dispose();
   }
 
@@ -155,30 +177,62 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     final busesOnRoute =
         _routeBusPositions[_selectedRouteId] ?? <String, LatLng>{};
 
-    // Build markers only for the selected route
-    final markers = busesOnRoute.entries.map((entry) {
+    // Build markers only for the selected route with staleness check
+    final markers = busesOnRoute.entries.where((entry) {
+      final busId = entry.key;
+      final lastUpdate = _routeLastUpdates[_selectedRouteId]?[busId];
+      
+      // Filter out ghost buses (>60 seconds stale)
+      if (lastUpdate != null) {
+        final staleness = DateTime.now().difference(lastUpdate).inSeconds;
+        if (staleness > 60) {
+          print('👻 COMMUTER: Ghost bus detected - $busId (stale for ${staleness}s)');
+          return false; // Skip this bus marker
+        }
+      }
+      return true;
+    }).map((entry) {
       final busId = entry.key;
       final pos = entry.value;
+      final lastUpdate = _routeLastUpdates[_selectedRouteId]?[busId];
+      
+      // Check staleness for signal warning
+      int staleness = 0;
+      if (lastUpdate != null) {
+        staleness = DateTime.now().difference(lastUpdate).inSeconds;
+      }
       
       // Read the status for this bus
       final status = _routeBusStatus[_selectedRouteId]?[busId] ?? 'In Service';
       
-      print('🎨 COMMUTER: Building marker for $busId - Status: "$status"');
+      print('🎨 COMMUTER: Building marker for $busId - Status: "$status", Staleness: ${staleness}s');
       
-      // Determine marker color based on status
+      // Determine marker color: Priority 1 = Signal Health, Priority 2 = Bus Status
       double markerHue;
-      if (status == 'Breakdown') {
-        markerHue = BitmapDescriptor.hueRed;
-        print('🎨 COMMUTER: Setting RED marker for $busId');
-      } else if (status == 'Delayed') {
-        markerHue = BitmapDescriptor.hueOrange;
-        print('🎨 COMMUTER: Setting ORANGE marker for $busId');
-      } else if (status == 'Full Capacity') {
-        markerHue = BitmapDescriptor.hueAzure;
-        print('🎨 COMMUTER: Setting BLUE marker for $busId');
-      } else {
-        markerHue = BitmapDescriptor.hueGreen;
-        print('🎨 COMMUTER: Setting GREEN marker for $busId (status was: "$status")');
+      String displayStatus;
+      
+      // First Check: Stale signal (>30 seconds)
+      if (staleness > 30) {
+        markerHue = BitmapDescriptor.hueYellow;
+        displayStatus = 'Signal Weak';
+        print('⚠️ COMMUTER: Setting YELLOW marker for $busId (weak signal)');
+      } 
+      // Second Check: Good signal, check bus status
+      else {
+        displayStatus = status;
+        if (status == 'Breakdown') {
+          markerHue = BitmapDescriptor.hueRed;
+          print('🎨 COMMUTER: Setting RED marker for $busId (Breakdown)');
+        } else if (status == 'Delayed') {
+          markerHue = BitmapDescriptor.hueOrange;
+          print('🎨 COMMUTER: Setting ORANGE marker for $busId (Delayed)');
+        } else if (status == 'Full Capacity') {
+          markerHue = BitmapDescriptor.hueAzure;
+          print('🎨 COMMUTER: Setting BLUE marker for $busId (Full Capacity)');
+        } else {
+          markerHue = BitmapDescriptor.hueGreen;
+          print('🎨 COMMUTER: Setting GREEN marker for $busId (In Service)');
+        }
       }
 
       return Marker(
@@ -187,7 +241,7 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
         icon: BitmapDescriptor.defaultMarkerWithHue(markerHue),
         infoWindow: InfoWindow(
           title: 'Bus $busId',
-          snippet: 'Status: $status',
+          snippet: 'Status: $displayStatus',
         ),
         onTap: () {
           setState(() {
@@ -208,21 +262,32 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
         ? (_routeBusStatus[_selectedRouteId]?[focusedBusId] ?? 'In Service')
         : 'In Service';
     
-    // Determine badge color based on status
+    // Determine badge color, text, and icon based on status
     Color badgeColor;
     String badgeText;
+    IconData badgeIcon;
+    
     if (focusedStatus == 'Breakdown') {
       badgeColor = Colors.red;
       badgeText = 'Breakdown';
+      badgeIcon = Icons.warning;
     } else if (focusedStatus == 'Delayed') {
       badgeColor = Colors.orange;
       badgeText = 'Delayed';
+      badgeIcon = Icons.access_time;
     } else if (focusedStatus == 'Full Capacity') {
       badgeColor = Colors.blue;
       badgeText = 'Full Capacity';
+      badgeIcon = Icons.people;
+    } else if (focusedStatus == 'Signal Weak') {
+      badgeColor = Colors.yellow.shade700;
+      badgeText = 'Signal Weak';
+      badgeIcon = Icons.signal_wifi_statusbar_connected_no_internet_4;
     } else {
+      // 'In Service' or default
       badgeColor = Colors.green;
-      badgeText = 'Live';
+      badgeText = focusedStatus;
+      badgeIcon = Icons.check_circle;
     }
 
     final activeBusIds = busesOnRoute.keys.toList();
@@ -422,17 +487,11 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               Icon(
-                                focusedStatus == 'Breakdown' 
-                                    ? Icons.warning 
-                                    : focusedStatus == 'Delayed'
-                                        ? Icons.schedule
-                                        : focusedStatus == 'Full Capacity'
-                                            ? Icons.people
-                                            : Icons.wifi,
-                                size: 12,
+                                badgeIcon,
+                                size: 14,
                                 color: Colors.white,
                               ),
-                              const SizedBox(width: 4),
+                              const SizedBox(width: 6),
                               Text(
                                 badgeText,
                                 style: const TextStyle(

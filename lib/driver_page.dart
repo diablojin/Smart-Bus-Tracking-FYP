@@ -28,6 +28,12 @@ class _DriverPageState extends State<DriverPage> {
   String _currentStatus = 'In Service';
 
   StreamSubscription<Position>? _positionSub;
+  
+  // Route name mapping for display
+  final Map<String, String> _routeNames = {
+    'route_01': 'Jln Dataran → Jln Tun Sambanthan',
+    'route_02': 'KLCC → Pavilion KL',
+  };
 
   @override
   void initState() {
@@ -319,26 +325,30 @@ class _DriverPageState extends State<DriverPage> {
               children: [
                 const Icon(Icons.map, color: Colors.blue, size: 32),
                 const SizedBox(width: 16),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Route',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.black54,
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Route',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.black54,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      _assignedRouteId,
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black87,
+                      const SizedBox(height: 4),
+                      Text(
+                        _routeNames[_assignedRouteId] ?? _assignedRouteId,
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black87,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ],
             ),

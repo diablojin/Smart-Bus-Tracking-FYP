@@ -17,8 +17,8 @@ class _CommuterHomePageState extends State<CommuterHomePage> {
   int _selectedIndex = 0;
 
   // Define the pages for each tab
-  final List<Widget> _pages = [
-    const _HomeTab(),
+  List<Widget> get _pages => [
+    _HomeTab(onSwitchToMap: () => _onItemTapped(1)),
     const _MapTab(),
     const _ProfileTab(),
     const _SettingsTab(),
@@ -68,102 +68,244 @@ class _CommuterHomePageState extends State<CommuterHomePage> {
   }
 }
 
-// Home Tab Content
+// Home Tab Content - Morning Dashboard
 class _HomeTab extends StatelessWidget {
-  const _HomeTab();
+  final VoidCallback onSwitchToMap;
+  
+  const _HomeTab({required this.onSwitchToMap});
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.location_on, size: 80, color: Colors.blue),
-          const SizedBox(height: 20),
-          const Text(
-            'Smart Bus Tracking',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            'Track buses in real-time',
-            style: TextStyle(fontSize: 16, color: Colors.grey[600]),
-          ),
-          const SizedBox(height: 40),
-          ElevatedButton.icon(
-            onPressed: () {
-              // Use push instead of pushReplacement to allow back navigation
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const CommuterMapPage()),
-              );
-            },
-            icon: const Icon(Icons.map),
-            label: const Text('View Bus Map'),
-            style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+    final now = DateTime.now();
+    final weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    final months = ['January', 'February', 'March', 'April', 'May', 'June', 
+                    'July', 'August', 'September', 'October', 'November', 'December'];
+    final formattedDate = '${weekdays[now.weekday - 1]}, ${months[now.month - 1]} ${now.day}, ${now.year}';
+    
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        // Header
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Hello, Commuter! 👋',
+              style: TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.bold,
+              ),
             ),
+            const SizedBox(height: 4),
+            Text(
+              formattedDate,
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey[600],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 24),
+        
+        // System Status Banner
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.green.shade50,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.green.shade200),
           ),
-          const SizedBox(height: 20),
-          // Quick Stats Card
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 40),
-            child: Card(
-              elevation: 4,
-              child: Padding(
-                padding: const EdgeInsets.all(20),
+          child: Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.green.shade700, size: 24),
+              const SizedBox(width: 12),
+              Expanded(
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceAround,
-                      children: [
-                        Column(
-                          children: [
-                            Icon(Icons.route, size: 32, color: Colors.blue[700]),
-                            const SizedBox(height: 8),
-                            const Text(
-                              '2',
-                              style: TextStyle(
-                                fontSize: 24,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            Text(
-                              'Routes',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey[600],
-                              ),
-                            ),
-                          ],
-                        ),
-                        Column(
-                          children: [
-                            Icon(Icons.directions_bus, size: 32, color: Colors.green[700]),
-                            const SizedBox(height: 8),
-                            const Text(
-                              '5',
-                              style: TextStyle(
-                                fontSize: 24,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            Text(
-                              'Active Buses',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey[600],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
+                    const Text(
+                      'System Status',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    Text(
+                      'All systems operational',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.green.shade700,
+                      ),
                     ),
                   ],
                 ),
               ),
-            ),
+            ],
           ),
-        ],
+        ),
+        const SizedBox(height: 28),
+        
+        // Favorites Section
+        const Text(
+          'Favorites',
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            _buildRouteChip(
+              context,
+              'Route 01',
+              'Jln Dataran → Jln Tun Sambanthan',
+              Icons.directions_bus,
+              Colors.blue,
+            ),
+            _buildRouteChip(
+              context,
+              'Route 02',
+              'KLCC → Pavilion KL',
+              Icons.directions_bus,
+              Colors.purple,
+            ),
+          ],
+        ),
+        const SizedBox(height: 28),
+        
+        // Latest News Section
+        const Text(
+          'Latest News',
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 12),
+        _buildAnnouncementCard(
+          'Maintenance Alert',
+          'Route 01 delays expected tomorrow.',
+          Icons.warning_amber_rounded,
+          Colors.orange,
+        ),
+        const SizedBox(height: 12),
+        _buildAnnouncementCard(
+          'App Update',
+          'Real-time tracking is now faster.',
+          Icons.info_outline,
+          Colors.blue,
+        ),
+        const SizedBox(height: 12),
+        _buildAnnouncementCard(
+          'Public Holiday',
+          'Buses running on Sunday schedule.',
+          Icons.calendar_today,
+          Colors.green,
+        ),
+        const SizedBox(height: 20),
+      ],
+    );
+  }
+  
+  Widget _buildRouteChip(
+    BuildContext context,
+    String routeId,
+    String routeName,
+    IconData icon,
+    Color color,
+  ) {
+    return InkWell(
+      onTap: () => onSwitchToMap(),
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withOpacity(0.3)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 20, color: color),
+            const SizedBox(width: 10),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  routeId,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: color,
+                  ),
+                ),
+                Text(
+                  routeName,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.grey[700],
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  Widget _buildAnnouncementCard(
+    String title,
+    String message,
+    IconData icon,
+    Color color,
+  ) {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, color: color, size: 24),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    message,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
