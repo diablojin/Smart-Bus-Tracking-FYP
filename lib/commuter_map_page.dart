@@ -5,9 +5,13 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 
 import 'mqtt_service.dart';
+import 'route_data_model.dart';
+import 'services/directions_service.dart';
 
 class CommuterMapPage extends StatefulWidget {
-  const CommuterMapPage({super.key});
+  final String? initialRouteId; // Optional: Pre-select a specific route
+  
+  const CommuterMapPage({super.key, this.initialRouteId});
 
   @override
   State<CommuterMapPage> createState() => _CommuterMapPageState();
@@ -26,182 +30,25 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
   final Map<String, Map<String, DateTime>> _routeLastUpdates = {};
   final Map<String, Map<String, String>> _routeBusStatus = {}; // routeId -> busId -> status
 
-  // Demo routes (later can come from Supabase or config)
-  final List<String> _routes = ['route_01', 'route_02'];
-  String _selectedRouteId = 'route_01';
-
-  // Route name mapping for display
-  final Map<String, String> _routeNames = {
-    'route_01': 'Wangsa Maju → TARUMT',
-    'route_02': 'Aeon Big Danau Kota → Setapak Central',
-  };
-
+  late String _selectedRouteId;
   String? _focusedBusId;
 
-  // Destination point (KL Sentral) for ETA calculation
-  final LatLng _destination = const LatLng(3.1335, 101.6868);
+  // Current route polyline points from Directions API
+  List<LatLng> _currentPolylinePoints = [];
 
-  // Route 01 polyline coordinates (Actual GPS tracking - 60 points)
-  final List<LatLng> _route01Points = const [
-    LatLng(3.2052117, 101.7319433),
-    LatLng(3.2056799, 101.7313395),
-    LatLng(3.2061699, 101.7307299),
-    LatLng(3.2065508, 101.7302284),
-    LatLng(3.206924, 101.7298496),
-    LatLng(3.2071134, 101.7296231),
-    LatLng(3.2072935, 101.7293998),
-    LatLng(3.2074943, 101.7291421),
-    LatLng(3.2076798, 101.728934),
-    LatLng(3.2078702, 101.7287295),
-    LatLng(3.2080998, 101.7285106),
-    LatLng(3.208305, 101.7282949),
-    LatLng(3.20851, 101.7280799),
-    LatLng(3.2087103, 101.7278603),
-    LatLng(3.2089051, 101.7278338),
-    LatLng(3.2090451, 101.7279732),
-    LatLng(3.2092199, 101.7281496),
-    LatLng(3.2094001, 101.7283033),
-    LatLng(3.2095817, 101.7284567),
-    LatLng(3.2097666, 101.7286083),
-    LatLng(3.209955, 101.7287532),
-    LatLng(3.2101305, 101.7288902),
-    LatLng(3.2103376, 101.7290545),
-    LatLng(3.2105399, 101.7291833),
-    LatLng(3.2106194, 101.7290925),
-    LatLng(3.2107403, 101.72888),
-    LatLng(3.2108817, 101.7286733),
-    LatLng(3.2110395, 101.7284506),
-    LatLng(3.2112076, 101.7285302),
-    LatLng(3.2113918, 101.72863),
-    LatLng(3.2116089, 101.7287511),
-    LatLng(3.211795, 101.728855),
-    LatLng(3.2119687, 101.728947),
-    LatLng(3.2121569, 101.7290399),
-    LatLng(3.2123401, 101.7291466),
-    LatLng(3.2125202, 101.72925),
-    LatLng(3.2127084, 101.7293433),
-    LatLng(3.212908, 101.7294513),
-    LatLng(3.2130933, 101.729555),
-    LatLng(3.2132687, 101.7296519),
-    LatLng(3.2134341, 101.7297371),
-    LatLng(3.2136491, 101.7298527),
-    LatLng(3.2138236, 101.7299519),
-    LatLng(3.2140067, 101.7300583),
-    LatLng(3.2141804, 101.7301601),
-    LatLng(3.2143798, 101.7302499),
-    LatLng(3.2145456, 101.7303826),
-    LatLng(3.2146674, 101.7303222),
-    LatLng(3.2147903, 101.7302199),
-    LatLng(3.21489, 101.7300849),
-    LatLng(3.2149932, 101.7299306),
-    LatLng(3.2150702, 101.7297784),
-    LatLng(3.2151208, 101.7296394),
-    LatLng(3.2151569, 101.7294589),
-    LatLng(3.2151559, 101.7292948),
-    LatLng(3.2151431, 101.729141),
-    LatLng(3.2151122, 101.7289796),
-    LatLng(3.2150553, 101.7288022),
-    LatLng(3.2149951, 101.7286384),
-    LatLng(3.2149492, 101.7285282),
-  ];
-
-  // Route 02 polyline coordinates (Actual GPS tracking - 33 points)
-  final List<LatLng> _route02Points = const [
-    LatLng(3.204415, 101.7157183),
-    LatLng(3.2043605, 101.7157135),
-    LatLng(3.2042001, 101.71583),
-    LatLng(3.2040417, 101.7159483),
-    LatLng(3.2038801, 101.7160699),
-    LatLng(3.2037362, 101.7161592),
-    LatLng(3.2035602, 101.7162583),
-    LatLng(3.2033803, 101.7163599),
-    LatLng(3.2031982, 101.7164316),
-    LatLng(3.2030103, 101.7165199),
-    LatLng(3.2028563, 101.716622),
-    LatLng(3.2027064, 101.716732),
-    LatLng(3.2025338, 101.716858),
-    LatLng(3.2023831, 101.7169686),
-    LatLng(3.2022378, 101.7170785),
-    LatLng(3.2020706, 101.7172098),
-    LatLng(3.2019049, 101.7173166),
-    LatLng(3.2017467, 101.7174334),
-    LatLng(3.2015653, 101.7175715),
-    LatLng(3.2014099, 101.7176918),
-    LatLng(3.201255, 101.7178118),
-    LatLng(3.2010933, 101.7179351),
-    LatLng(3.2009623, 101.7180342),
-    LatLng(3.200805, 101.7181517),
-    LatLng(3.2007096, 101.7183105),
-    LatLng(3.2009437, 101.7186073),
-    LatLng(3.2011325, 101.7188609),
-    LatLng(3.2013401, 101.7191617),
-    LatLng(3.2015483, 101.7194633),
-    LatLng(3.2017404, 101.7197553),
-    LatLng(3.2019794, 101.7200535),
-    LatLng(3.2022119, 101.7203284),
-    LatLng(3.2023424, 101.720483),
-  ];
-
-  /// Build Route 01 bus stop markers
-  Set<Marker> _getRoute01Stops() {
-    return {
-      Marker(
-        markerId: const MarkerId('stop_route01_start'),
-        position: _route01Points.first, // Wangsa Maju
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
-        infoWindow: const InfoWindow(
-          title: '🚏 Wangsa Maju',
-          snippet: 'Route 01 Start',
-        ),
-      ),
-      Marker(
-        markerId: const MarkerId('stop_route01_middle'),
-        position: _route01Points[30], // Middle point (~Taman Bunga Raya)
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
-        infoWindow: const InfoWindow(
-          title: '🚏 Taman Bunga Raya',
-          snippet: 'Route 01 Stop',
-        ),
-      ),
-      Marker(
-        markerId: const MarkerId('stop_route01_end'),
-        position: _route01Points.last, // TARUMT Main Gate
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
-        infoWindow: const InfoWindow(
-          title: '🚏 TARUMT Main Gate',
-          snippet: 'Route 01 End',
-        ),
-      ),
-    };
-  }
-
-  /// Build Route 02 bus stop markers
-  Set<Marker> _getRoute02Stops() {
-    return {
-      Marker(
-        markerId: const MarkerId('stop_route02_start'),
-        position: _route02Points.first, // Aeon Big Danau Kota
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
-        infoWindow: const InfoWindow(
-          title: '🚏 Aeon Big Danau Kota',
-          snippet: 'Route 02 Start',
-        ),
-      ),
-      Marker(
-        markerId: const MarkerId('stop_route02_end'),
-        position: _route02Points.last, // Setapak Central
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
-        infoWindow: const InfoWindow(
-          title: '🚏 Setapak Central',
-          snippet: 'Route 02 End',
-        ),
-      ),
-    };
-  }
+  // Destination point for ETA calculation (will be dynamic based on route)
+  LatLng? _destination;
 
   @override
   void initState() {
     super.initState();
+    // Initialize selected route from widget parameter or default to route_01
+    _selectedRouteId = widget.initialRouteId ?? 'route_01';
+    
+    // Fetch route polyline immediately
+    _fetchRoutePolyline();
+    
+    // Initialize MQTT connection
     _initMqtt();
     
     // Start periodic timer to refresh UI and check for stale buses
@@ -223,6 +70,107 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
         });
       }
     });
+  }
+
+  /// Fetch route polyline from Directions API
+  Future<void> _fetchRoutePolyline() async {
+    print('📍 Starting to fetch route for: $_selectedRouteId');
+    
+    // Find the route model
+    final routeModel = allRoutes.firstWhere(
+      (route) => route.id == _selectedRouteId,
+      orElse: () => allRoutes.first,
+    );
+
+    print('📍 Route Model Found: ${routeModel.label} - ${routeModel.name}');
+    print('📍 Origin: ${routeModel.originCoords}');
+    print('📍 Destination: ${routeModel.destinationCoords}');
+
+    // Set destination for ETA calculation
+    _destination = routeModel.destinationCoords;
+
+    try {
+      // Fetch route from Directions API
+      final directionsService = DirectionsService();
+      final points = await directionsService.getRoute(
+        routeModel.originCoords,
+        routeModel.destinationCoords,
+      );
+
+      print('📍 API returned ${points.length} points');
+
+      if (points.isNotEmpty) {
+        setState(() {
+          _currentPolylinePoints = points;
+        });
+        print('✅ Successfully loaded ${points.length} polyline points for $_selectedRouteId');
+        
+        // Center camera on the route after a short delay
+        Future.delayed(const Duration(milliseconds: 500), () {
+          _fitRouteBounds(routeModel.originCoords, routeModel.destinationCoords);
+        });
+      } else {
+        // FALLBACK: Draw a simple straight line if API fails
+        setState(() {
+          _currentPolylinePoints = [
+            routeModel.originCoords,
+            routeModel.destinationCoords,
+          ];
+        });
+        print('⚠️ No route points from API - using fallback straight line for $_selectedRouteId');
+        
+        // Still center camera on origin/destination
+        Future.delayed(const Duration(milliseconds: 500), () {
+          _fitRouteBounds(routeModel.originCoords, routeModel.destinationCoords);
+        });
+      }
+    } catch (e) {
+      print('❌ Error fetching route from API: $e');
+      
+      // FALLBACK: Draw a simple straight line on error
+      setState(() {
+        _currentPolylinePoints = [
+          routeModel.originCoords,
+          routeModel.destinationCoords,
+        ];
+      });
+      print('⚠️ Using fallback straight line due to API error');
+      
+      // Still center camera on origin/destination
+      Future.delayed(const Duration(milliseconds: 500), () {
+        _fitRouteBounds(routeModel.originCoords, routeModel.destinationCoords);
+      });
+    }
+  }
+
+  /// Fit camera to show the entire route
+  void _fitRouteBounds(LatLng origin, LatLng destination) {
+    if (_mapController == null) return;
+
+    // Calculate bounds
+    final double minLat = origin.latitude < destination.latitude
+        ? origin.latitude
+        : destination.latitude;
+    final double maxLat = origin.latitude > destination.latitude
+        ? origin.latitude
+        : destination.latitude;
+    final double minLng = origin.longitude < destination.longitude
+        ? origin.longitude
+        : destination.longitude;
+    final double maxLng = origin.longitude > destination.longitude
+        ? origin.longitude
+        : destination.longitude;
+
+    final bounds = LatLngBounds(
+      southwest: LatLng(minLat, minLng),
+      northeast: LatLng(maxLat, maxLng),
+    );
+
+    _mapController!.animateCamera(
+      CameraUpdate.newLatLngBounds(bounds, 80), // 80px padding
+    );
+    
+    print('📍 Camera positioned to show route bounds');
   }
 
   Future<void> _initMqtt() async {
@@ -286,11 +234,13 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
   /// Calculate ETA from bus position to destination
   /// Assumes average speed of 40 km/h (approx 666 meters/minute)
   String _calculateETA(LatLng busPos) {
+    if (_destination == null) return 'N/A';
+    
     final distanceInMeters = Geolocator.distanceBetween(
       busPos.latitude,
       busPos.longitude,
-      _destination.latitude,
-      _destination.longitude,
+      _destination!.latitude,
+      _destination!.longitude,
     );
 
     // Average speed: 40 km/h = 40000 m/h = 666.67 m/min
@@ -311,6 +261,12 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
 
   @override
   Widget build(BuildContext context) {
+    // Get current route model
+    final currentRoute = allRoutes.firstWhere(
+      (route) => route.id == _selectedRouteId,
+      orElse: () => allRoutes.first,
+    );
+
     final busesOnRoute =
         _routeBusPositions[_selectedRouteId] ?? <String, LatLng>{};
 
@@ -323,7 +279,6 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
       if (lastUpdate != null) {
         final staleness = DateTime.now().difference(lastUpdate).inSeconds;
         if (staleness > 60) {
-          print('👻 COMMUTER: Ghost bus detected - $busId (stale for ${staleness}s)');
           return false; // Skip this bus marker
         }
       }
@@ -342,8 +297,6 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
       // Read the status for this bus
       final status = _routeBusStatus[_selectedRouteId]?[busId] ?? 'In Service';
       
-      print('🎨 COMMUTER: Building marker for $busId - Status: "$status", Staleness: ${staleness}s');
-      
       // Determine marker color: Priority 1 = Signal Health, Priority 2 = Bus Status
       double markerHue;
       String displayStatus;
@@ -352,23 +305,18 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
       if (staleness > 30) {
         markerHue = BitmapDescriptor.hueYellow;
         displayStatus = 'Signal Weak';
-        print('⚠️ COMMUTER: Setting YELLOW marker for $busId (weak signal)');
       } 
       // Second Check: Good signal, check bus status
       else {
         displayStatus = status;
         if (status == 'Breakdown') {
           markerHue = BitmapDescriptor.hueRed;
-          print('🎨 COMMUTER: Setting RED marker for $busId (Breakdown)');
         } else if (status == 'Delayed') {
           markerHue = BitmapDescriptor.hueOrange;
-          print('🎨 COMMUTER: Setting ORANGE marker for $busId (Delayed)');
         } else if (status == 'Full Capacity') {
           markerHue = BitmapDescriptor.hueAzure;
-          print('🎨 COMMUTER: Setting BLUE marker for $busId (Full Capacity)');
         } else {
           markerHue = BitmapDescriptor.hueGreen;
-          print('🎨 COMMUTER: Setting GREEN marker for $busId (In Service)');
         }
       }
 
@@ -387,6 +335,32 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
         },
       );
     }).toSet();
+
+    // Add origin and destination markers
+    if (_currentPolylinePoints.isNotEmpty) {
+      markers.add(
+        Marker(
+          markerId: const MarkerId('route_origin'),
+          position: currentRoute.originCoords,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
+          infoWindow: InfoWindow(
+            title: '🚏 ${currentRoute.origin}',
+            snippet: 'Origin',
+          ),
+        ),
+      );
+      markers.add(
+        Marker(
+          markerId: const MarkerId('route_destination'),
+          position: currentRoute.destinationCoords,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
+          infoWindow: InfoWindow(
+            title: '🚏 ${currentRoute.destination}',
+            snippet: 'Destination',
+          ),
+        ),
+      );
+    }
 
     final focusedBusId = _focusedBusId;
     final focusedPos = focusedBusId != null ? busesOnRoute[focusedBusId] : null;
@@ -429,32 +403,14 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
 
     final activeBusIds = busesOnRoute.keys.toList();
 
-    // Add bus stop markers based on selected route
-    if (_selectedRouteId == 'route_01') {
-      markers.addAll(_getRoute01Stops());
-    } else if (_selectedRouteId == 'route_02') {
-      markers.addAll(_getRoute02Stops());
-    }
-
-    // Build polylines for the selected route
+    // Build polyline from current route points
     final Set<Polyline> polylines = {};
-    if (_selectedRouteId == 'route_01') {
+    if (_currentPolylinePoints.isNotEmpty) {
       polylines.add(
         Polyline(
-          polylineId: const PolylineId('route_01_path'),
-          points: _route01Points,
-          color: Colors.blueAccent,
-          width: 5,
-          startCap: Cap.roundCap,
-          endCap: Cap.roundCap,
-        ),
-      );
-    } else if (_selectedRouteId == 'route_02') {
-      polylines.add(
-        Polyline(
-          polylineId: const PolylineId('route_02_path'),
-          points: _route02Points,
-          color: Colors.deepPurpleAccent,
+          polylineId: PolylineId('${_selectedRouteId}_path'),
+          points: _currentPolylinePoints,
+          color: Theme.of(context).primaryColor,
           width: 5,
           startCap: Cap.roundCap,
           endCap: Cap.roundCap,
@@ -478,100 +434,97 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
             },
           ),
 
-          // Top route selector
+          // Top Route Header Card
           Positioned(
-            top: 8,
-            left: 8,
-            right: 8,
+            top: 12,
+            left: 12,
+            right: 12,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.9),
-                borderRadius: BorderRadius.circular(999),
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
                 boxShadow: [
                   BoxShadow(
                     color: Colors.black.withOpacity(0.15),
-                    blurRadius: 6,
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
                   ),
                 ],
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.route, size: 18, color: Colors.black87),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'Route:',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                      color: Colors.black87,
+                  // Route Label Badge
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).primaryColor,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      currentRoute.label,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
                     ),
                   ),
-                  const SizedBox(width: 6),
+                  const SizedBox(width: 12),
+                  // Origin → Destination
                   Expanded(
-                    child: DropdownButton<String>(
-                      value: _selectedRouteId,
-                      underline: const SizedBox(),
-                      elevation: 4,
-                      borderRadius: BorderRadius.circular(20),
-                      dropdownColor: Colors.white.withOpacity(0.95),
-                      isExpanded: true,
-                      icon: Icon(
-                        Icons.keyboard_arrow_down,
-                        size: 18,
-                        color: Colors.grey[700],
-                      ),
-                      items: _routes
-                          .map((r) => DropdownMenuItem(
-                                value: r,
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                    vertical: 10,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: _selectedRouteId == r 
-                                        ? Colors.blue.withOpacity(0.1)
-                                        : Colors.transparent,
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      Icon(
-                                        Icons.directions_bus,
-                                        size: 16,
-                                        color: _selectedRouteId == r 
-                                            ? Colors.blue 
-                                            : Colors.grey[600],
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Expanded(
-                                        child: Text(
-                                          _routeNames[r] ?? r,
-                                          style: TextStyle(
-                                            fontSize: 13,
-                                            fontWeight: _selectedRouteId == r 
-                                                ? FontWeight.bold 
-                                                : FontWeight.w500,
-                                            color: _selectedRouteId == r 
-                                                ? Colors.blue 
-                                                : Colors.black87,
-                                          ),
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          currentRoute.name,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                currentRoute.origin,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey[600],
                                 ),
-                              ))
-                          .toList(),
-                      onChanged: (value) {
-                        if (value == null) return;
-                        setState(() {
-                          _selectedRouteId = value;
-                          _focusedBusId = null;
-                        });
-                      },
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 4),
+                              child: Icon(
+                                Icons.arrow_forward,
+                                size: 12,
+                                color: Colors.grey[600],
+                              ),
+                            ),
+                            Flexible(
+                              child: Text(
+                                currentRoute.destination,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey[600],
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -579,21 +532,21 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
             ),
           ),
 
-          // Bottom info card
+          // Bottom Info Sheet
           Positioned(
             left: 8,
             right: 8,
-            bottom: 76, // Moved up to avoid FAB overlap
+            bottom: 8,
             child: Container(
-              padding: const EdgeInsets.all(14),
+              padding: const EdgeInsets.all(18),
               decoration: BoxDecoration(
                 color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(16),
                 boxShadow: [
                   BoxShadow(
                     color: Colors.black.withOpacity(0.2),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
+                    blurRadius: 12,
+                    offset: const Offset(0, -2),
                   ),
                 ],
               ),
@@ -601,23 +554,75 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Header with bus icon and route/bus info
+                  // Static Route Data (Always visible)
                   Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Icon(Icons.directions_bus, size: 20),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          focusedBusId == null
-                              ? '${_routeNames[_selectedRouteId] ?? _selectedRouteId} | Waiting for bus...'
-                              : '${_routeNames[_selectedRouteId] ?? _selectedRouteId} | Bus: $focusedBusId',
+                      // Fare
+                      Row(
+                        children: [
+                          Icon(
+                            currentRoute.fare.toLowerCase() == 'free'
+                                ? Icons.star
+                                : Icons.payment,
+                            size: 18,
+                            color: currentRoute.fare.toLowerCase() == 'free'
+                                ? Colors.green
+                                : Theme.of(context).primaryColor,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            currentRoute.fare,
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: currentRoute.fare.toLowerCase() == 'free'
+                                  ? Colors.green
+                                  : Theme.of(context).primaryColor,
+                            ),
+                          ),
+                        ],
+                      ),
+                      // Operating Hours
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.access_time,
+                            size: 16,
+                            color: Colors.grey[600],
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            currentRoute.operatingHours,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  
+                  const Divider(height: 1),
+                  const SizedBox(height: 14),
+                  
+                  // Live Bus Data (Conditional)
+                  if (focusedBusId != null) ...[
+                    // Bus header with status badge
+                    Row(
+                      children: [
+                        const Icon(Icons.directions_bus, size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Bus $focusedBusId',
                           style: const TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                      ),
-                      if (focusedBusId != null)
+                        const Spacer(),
                         Container(
                           padding: const EdgeInsets.symmetric(
                             horizontal: 8,
@@ -625,97 +630,118 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
                           ),
                           decoration: BoxDecoration(
                             color: badgeColor,
-                            borderRadius: BorderRadius.circular(12),
+                            borderRadius: BorderRadius.circular(8),
                           ),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               Icon(
                                 badgeIcon,
-                                size: 14,
+                                size: 12,
                                 color: Colors.white,
                               ),
-                              const SizedBox(width: 6),
+                              const SizedBox(width: 4),
                               Text(
                                 badgeText,
                                 style: const TextStyle(
                                   color: Colors.white,
-                                  fontSize: 12,
+                                  fontSize: 11,
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
                             ],
                           ),
                         ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  
-                  // Status line with ETA
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Expanded(
-                        child: Text(
-                          focusedBusId != null
-                              ? 'Status: $focusedStatus • ${activeBusIds.length} bus(es) active'
-                              : 'Status: Waiting for data • ${activeBusIds.length} bus(es) active',
-                          style: TextStyle(fontSize: 13, color: Colors.grey[700]),
-                        ),
-                      ),
-                      // ETA Badge
-                      if (focusedPos != null)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 6,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.green.shade50,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: Colors.green.shade300,
-                              width: 1.5,
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    
+                    // ETA and Active buses
+                    Row(
+                      children: [
+                        if (focusedPos != null && _destination != null) ...[
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
                             ),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.access_time,
-                                size: 14,
-                                color: Colors.green.shade700,
+                            decoration: BoxDecoration(
+                              color: Colors.green.shade50,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: Colors.green.shade300,
+                                width: 1.5,
                               ),
-                              const SizedBox(width: 4),
-                              Text(
-                                _calculateETA(focusedPos),
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.bold,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.access_time,
+                                  size: 14,
                                   color: Colors.green.shade700,
                                 ),
-                              ),
-                            ],
+                                const SizedBox(width: 4),
+                                Text(
+                                  'ETA: ${_calculateETA(focusedPos)}',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.green.shade700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                        ],
+                        Text(
+                          '${activeBusIds.length} bus(es) active',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.grey[600],
                           ),
                         ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  
-                  // Last update timestamp
-                  if (focusedLastUpdate != null)
-                    Text(
-                      'Last update: $focusedLastUpdate',
-                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                      ],
                     ),
-                  
-                  // Coordinates
-                  if (focusedPos != null) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      'Lat: ${focusedPos.latitude.toStringAsFixed(5)}, '
-                      'Lng: ${focusedPos.longitude.toStringAsFixed(5)}',
-                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    if (focusedLastUpdate != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        'Last update: $focusedLastUpdate',
+                        style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+                      ),
+                    ],
+                  ] else ...[
+                    // No bus tracking - show waiting message
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: Colors.orange.shade200,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.info_outline,
+                            size: 20,
+                            color: Colors.orange.shade700,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Waiting for bus departure...',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.orange.shade900,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ],
@@ -724,11 +750,14 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _recenterOnFocusedBus,
-        tooltip: 'Recenter on focused bus',
-        child: const Icon(Icons.my_location),
-      ),
+      floatingActionButton: focusedPos != null
+          ? FloatingActionButton(
+              onPressed: _recenterOnFocusedBus,
+              tooltip: 'Recenter on bus',
+              child: const Icon(Icons.my_location),
+            )
+          : null,
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
     );
   }
 }
