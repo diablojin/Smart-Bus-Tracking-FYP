@@ -167,6 +167,20 @@ class RouteSearchResult {
   });
 }
 
+class TripSelection {
+  final RouteInfo route;
+  final Stop fromStop;
+  final Stop toStop;
+  final BusInfo bus;
+
+  TripSelection({
+    required this.route,
+    required this.fromStop,
+    required this.toStop,
+    required this.bus,
+  });
+}
+
 // Service Class
 class RouteSearchService {
   /// Get all stops ordered by name

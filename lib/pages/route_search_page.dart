@@ -1,6 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 
 import '../services/route_search_service.dart';
+import '../commuter_map_page.dart';
 
 class RouteSearchPage extends StatefulWidget {
   const RouteSearchPage({super.key});
@@ -13,6 +17,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
   List<Stop> _allStops = [];
   bool _isLoadingStops = true;
   bool _isSearching = false;
+  bool _detectingLocation = false;
   
   Stop? _selectedFromStop;
   Stop? _selectedToStop;
@@ -91,6 +96,172 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     }
   }
 
+  /// Get current GPS position with permission handling
+  Future<Position?> _getCurrentPosition() async {
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        print('⚠️ Location services are disabled');
+        return null;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          print('⚠️ Location permission denied by user');
+          return null;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        print('⚠️ Location permission permanently denied');
+        return null;
+      }
+
+      // Add timeout to prevent hanging on emulator
+      return await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.medium, // Changed from high to medium for emulator compatibility
+        timeLimit: const Duration(seconds: 10), // 10 second timeout
+      ).timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          print('⚠️ Location request timed out (emulator may not have GPS)');
+          throw TimeoutException('Location request timed out');
+        },
+      );
+    } catch (e) {
+      print('❌ Error getting current position: $e');
+      return null;
+    }
+  }
+
+  /// Find the nearest stop from current position
+  Stop? _findNearestStop(Position position) {
+    if (_allStops.isEmpty) return null;
+
+    try {
+      Stop? nearest;
+      double? nearestDistance;
+
+      for (final stop in _allStops) {
+        try {
+          final distance = Geolocator.distanceBetween(
+            position.latitude,
+            position.longitude,
+            stop.latitude,
+            stop.longitude,
+          );
+
+          if (nearest == null || distance < nearestDistance!) {
+            nearest = stop;
+            nearestDistance = distance;
+          }
+        } catch (e) {
+          print('⚠️ Error calculating distance to stop ${stop.name}: $e');
+          continue; // Skip this stop and continue with next
+        }
+      }
+
+      return nearest;
+    } catch (e) {
+      print('❌ Error in _findNearestStop: $e');
+      return null;
+    }
+  }
+
+  /// Use current location to auto-select the From stop
+  Future<void> _useCurrentLocationAsFrom() async {
+    setState(() {
+      _detectingLocation = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final position = await _getCurrentPosition();
+      if (position == null) {
+        setState(() {
+          _detectingLocation = false;
+          _errorMessage = 'Unable to get current location. '
+              'Please enable GPS in emulator settings or check location permissions.';
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Tip: In Android Emulator, go to Settings > Location to enable GPS',
+              ),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 4),
+            ),
+          );
+        }
+        return;
+      }
+
+      final nearest = _findNearestStop(position);
+      if (nearest == null) {
+        setState(() {
+          _detectingLocation = false;
+          _errorMessage = 'No stops available in the system.';
+        });
+        return;
+      }
+
+      // Calculate distance in km for display
+      final distanceInMeters = Geolocator.distanceBetween(
+        position.latitude,
+        position.longitude,
+        nearest.latitude,
+        nearest.longitude,
+      );
+      final distanceInKm = (distanceInMeters / 1000).toStringAsFixed(2);
+
+      setState(() {
+        _selectedFromStop = nearest;
+        _detectingLocation = false;
+        _searchResult = null; // Clear previous results
+      });
+
+      // Show confirmation to user
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Nearest stop: ${nearest.name} (${distanceInKm} km away)',
+            ),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } on TimeoutException {
+      setState(() {
+        _detectingLocation = false;
+        _errorMessage = 'Location request timed out. '
+            'Emulator may not have GPS enabled. Please enable location in emulator settings.';
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Location timeout. Enable GPS in Emulator: Settings > Location',
+            ),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (e, stackTrace) {
+      print('❌ Error in _useCurrentLocationAsFrom: $e');
+      print('Stack trace: $stackTrace');
+      setState(() {
+        _detectingLocation = false;
+        _errorMessage = 'Failed to detect location: ${e.toString()}';
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -159,14 +330,38 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
                       ),
                       const SizedBox(height: 24),
 
-                      // From Stop Dropdown
-                      Text(
-                        'From Stop',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.grey[700],
-                        ),
+                      // From Stop Label with "Use Current Location" button
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'From Stop',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.grey[700],
+                            ),
+                          ),
+                          TextButton.icon(
+                            onPressed: _detectingLocation ? null : _useCurrentLocationAsFrom,
+                            icon: _detectingLocation
+                                ? const SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.my_location, size: 18),
+                            label: Text(
+                              _detectingLocation ? 'Detecting...' : 'Use Current Location',
+                              style: const TextStyle(fontSize: 13),
+                            ),
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 8),
                       DropdownButtonFormField<Stop>(
@@ -494,7 +689,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
               ),
               const SizedBox(height: 12),
               ...result.busesWithSchedules.map((busWithSchedules) {
-                return _buildBusScheduleCard(busWithSchedules);
+                return _buildBusScheduleCard(result, busWithSchedules);
               }).toList(),
             ],
           ],
@@ -503,102 +698,140 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     );
   }
 
-  Widget _buildBusScheduleCard(BusWithSchedules busWithSchedules) {
+  Widget _buildBusScheduleCard(RouteSearchResult result, BusWithSchedules busWithSchedules) {
     // Get departure times as a comma-separated string
     final departureTimes = busWithSchedules.schedules
         .map((schedule) => schedule.departureTime)
         .join(', ');
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.grey[50],
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey[300]!),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(
-                Icons.directions_bus,
-                color: Theme.of(context).primaryColor,
-                size: 24,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Bus ${busWithSchedules.bus.code}',
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    Text(
-                      busWithSchedules.bus.plateNo,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey[600],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+    return InkWell(
+      onTap: () {
+        // Create trip selection
+        final trip = TripSelection(
+          route: result.route,
+          fromStop: result.fromStop,
+          toStop: result.toStop,
+          bus: busWithSchedules.bus,
+        );
+
+        // Navigate to commuter map with trip selection
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => CommuterMapPage(tripSelection: trip),
           ),
-          if (busWithSchedules.schedules.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            const Divider(height: 1),
-            const SizedBox(height: 12),
+        );
+      },
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.grey[50],
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey[300]!),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.access_time, size: 16, color: Colors.grey[600]),
+                Icon(
+                  Icons.directions_bus,
+                  color: Theme.of(context).primaryColor,
+                  size: 24,
+                ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Departure Times',
+                        'Bus ${busWithSchedules.bus.code}',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        busWithSchedules.bus.plateNo,
                         style: TextStyle(
                           fontSize: 12,
                           color: Colors.grey[600],
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        departureTimes.isNotEmpty
-                            ? departureTimes
-                            : 'No schedules available',
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ],
                   ),
                 ),
+                Icon(
+                  Icons.chevron_right,
+                  color: Colors.grey[400],
+                  size: 24,
+                ),
               ],
             ),
-          ] else ...[
-            const SizedBox(height: 8),
-            Text(
-              'No schedules available',
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.grey[600],
-                fontStyle: FontStyle.italic,
+            if (busWithSchedules.schedules.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              const Divider(height: 1),
+              const SizedBox(height: 12),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.access_time, size: 16, color: Colors.grey[600]),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Departure Times',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey[600],
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          departureTimes.isNotEmpty
+                              ? departureTimes
+                              : 'No schedules available',
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
+            ] else ...[
+              const SizedBox(height: 8),
+              Text(
+                'No schedules available',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey[600],
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ],
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                Text(
+                  'Tap to view on map',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).primaryColor,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
             ),
           ],
-        ],
+        ),
       ),
     );
   }

@@ -8,12 +8,14 @@ import 'package:http/http.dart' as http;
 import 'mqtt_service.dart';
 import 'route_data_model.dart';
 import 'services/directions_service.dart';
+import 'services/route_search_service.dart';
 import 'keys/directions_api_key.dart';
 
 class CommuterMapPage extends StatefulWidget {
-  final String? initialRouteId; // Optional: Pre-select a specific route
+  final String? initialRouteId; // Optional: Pre-select a specific route (legacy)
+  final TripSelection? tripSelection; // New: Selected trip from search
   
-  const CommuterMapPage({super.key, this.initialRouteId});
+  const CommuterMapPage({super.key, this.initialRouteId, this.tripSelection});
 
   @override
   State<CommuterMapPage> createState() => _CommuterMapPageState();
@@ -41,11 +43,21 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
   // Destination point for ETA calculation (will be dynamic based on route)
   LatLng? _destination;
 
+  // Custom bus icons (single icon or multiple colored icons)
+  BitmapDescriptor? _busIcon; // Default/green icon for "In Service"
+  BitmapDescriptor? _busIconRed; // For "Breakdown"
+  BitmapDescriptor? _busIconOrange; // For "Delayed"
+  BitmapDescriptor? _busIconBlue; // For "Full Capacity"
+  BitmapDescriptor? _busIconYellow; // For "Signal Weak"
+
   @override
   void initState() {
     super.initState();
     // Initialize selected route from widget parameter or default to route_01
     _selectedRouteId = widget.initialRouteId ?? 'route_01';
+    
+    // Load custom bus icon
+    _loadBusIcon();
     
     // Fetch route polyline immediately
     _fetchRoutePolyline();
@@ -74,6 +86,58 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     });
   }
 
+  /// Load custom bus icon(s) from assets
+  Future<void> _loadBusIcon() async {
+    // Icon size: 32x32 pixels for better map visibility
+    const config = ImageConfiguration(size: Size(32, 32));
+    
+    print('🔧 Loading colored bus icons (bus_icon_{color}.png)...');
+    
+    // Load status-specific colored bus icons following naming scheme: bus_icon_{color}.png
+    try {
+      final iconRed = await BitmapDescriptor.asset(config, 'assets/icons/bus_icon_red.png');
+      if (mounted) setState(() => _busIconRed = iconRed);
+      print('✅ bus_icon_red.png loaded (32x32) - Breakdown');
+    } catch (e) {
+      print('❌ bus_icon_red.png not found: $e');
+    }
+    
+    try {
+      final iconOrange = await BitmapDescriptor.asset(config, 'assets/icons/bus_icon_orange.png');
+      if (mounted) setState(() => _busIconOrange = iconOrange);
+      print('✅ bus_icon_orange.png loaded (32x32) - Delayed');
+    } catch (e) {
+      print('❌ bus_icon_orange.png not found: $e');
+    }
+    
+    try {
+      final iconBlue = await BitmapDescriptor.asset(config, 'assets/icons/bus_icon_blue.png');
+      if (mounted) setState(() => _busIconBlue = iconBlue);
+      print('✅ bus_icon_blue.png loaded (32x32) - Full Capacity');
+    } catch (e) {
+      print('❌ bus_icon_blue.png not found: $e');
+    }
+    
+    try {
+      final iconGreen = await BitmapDescriptor.asset(config, 'assets/icons/bus_icon_green.png');
+      if (mounted) setState(() => _busIcon = iconGreen);
+      print('✅ bus_icon_green.png loaded (32x32) - In Service');
+    } catch (e) {
+      print('❌ bus_icon_green.png not found: $e');
+    }
+    
+    // Try to load yellow icon for Signal Weak (optional, to be added later)
+    try {
+      final iconYellow = await BitmapDescriptor.asset(config, 'assets/icons/bus_icon_yellow.png');
+      if (mounted) setState(() => _busIconYellow = iconYellow);
+      print('✅ bus_icon_yellow.png loaded (32x32) - Signal Weak');
+    } catch (e) {
+      print('ℹ️ bus_icon_yellow.png not found yet (will use default yellow marker for Signal Weak)');
+    }
+    
+    print('🚌 Bus icon loading complete!');
+  }
+
   /// Debug function to test Directions API via raw HTTP
   Future<void> testDirectionsFromApp() async {
     debugPrint('Using Directions key prefix: ${directionsApiKey.substring(0, 8)}');
@@ -95,28 +159,48 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
 
   /// Fetch route polyline from Directions API
   Future<void> _fetchRoutePolyline() async {
-    print('📍 Starting to fetch route for: $_selectedRouteId');
+    print('📍 Starting to fetch route');
     
-    // Find the route model
-    final routeModel = allRoutes.firstWhere(
-      (route) => route.id == _selectedRouteId,
-      orElse: () => allRoutes.first,
-    );
-
-    print('📍 Route Model Found: ${routeModel.label} - ${routeModel.name}');
-    print('📍 Origin: ${routeModel.originCoords}');
-    print('📍 Destination: ${routeModel.destinationCoords}');
+    LatLng origin;
+    LatLng destination;
+    
+    // Use TripSelection if available, otherwise fall back to hardcoded route model
+    if (widget.tripSelection != null) {
+      // Use dynamic coordinates from selected trip
+      origin = LatLng(
+        widget.tripSelection!.fromStop.latitude,
+        widget.tripSelection!.fromStop.longitude,
+      );
+      destination = LatLng(
+        widget.tripSelection!.toStop.latitude,
+        widget.tripSelection!.toStop.longitude,
+      );
+      
+      print('📍 Using trip selection: ${widget.tripSelection!.fromStop.name} → ${widget.tripSelection!.toStop.name}');
+      print('📍 Origin: $origin');
+      print('📍 Destination: $destination');
+    } else {
+      // Legacy behavior: use hardcoded route model
+      final routeModel = allRoutes.firstWhere(
+        (route) => route.id == _selectedRouteId,
+        orElse: () => allRoutes.first,
+      );
+      
+      origin = routeModel.originCoords;
+      destination = routeModel.destinationCoords;
+      
+      print('📍 Using legacy route model: ${routeModel.label} - ${routeModel.name}');
+      print('📍 Origin: $origin');
+      print('📍 Destination: $destination');
+    }
 
     // Set destination for ETA calculation
-    _destination = routeModel.destinationCoords;
+    _destination = destination;
 
     try {
       // Fetch route from Directions API
       final directionsService = DirectionsService();
-      final points = await directionsService.getRoute(
-        routeModel.originCoords,
-        routeModel.destinationCoords,
-      );
+      final points = await directionsService.getRoute(origin, destination);
 
       print('📍 API returned ${points.length} points');
 
@@ -124,27 +208,23 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
         setState(() {
           _currentPolylinePoints = points;
         });
-        print('✅ Successfully loaded ${points.length} polyline points for $_selectedRouteId');
+        print('✅ Successfully loaded ${points.length} polyline points');
         
         // Center camera on the route after a short delay
         Future.delayed(const Duration(milliseconds: 500), () {
-          _fitRouteBounds(routeModel.originCoords, routeModel.destinationCoords);
+          _fitRouteBounds(origin, destination);
         });
       } else {
         // FALLBACK: Draw a simple straight line if API fails
         setState(() {
-          _currentPolylinePoints = [
-            routeModel.originCoords,
-            routeModel.destinationCoords,
-          ];
+          _currentPolylinePoints = [origin, destination];
         });
-        print('⚠️ No route points from API - using fallback straight line for $_selectedRouteId');
-        print('⚠️ Fallback points: Origin ${routeModel.originCoords}, Destination ${routeModel.destinationCoords}');
-        print('⚠️ _currentPolylinePoints now has ${_currentPolylinePoints.length} points');
+        print('⚠️ No route points from API - using fallback straight line');
+        print('⚠️ Fallback points: Origin $origin, Destination $destination');
         
         // Still center camera on origin/destination
         Future.delayed(const Duration(milliseconds: 500), () {
-          _fitRouteBounds(routeModel.originCoords, routeModel.destinationCoords);
+          _fitRouteBounds(origin, destination);
         });
       }
     } catch (e) {
@@ -152,18 +232,13 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
       
       // FALLBACK: Draw a simple straight line on error
       setState(() {
-        _currentPolylinePoints = [
-          routeModel.originCoords,
-          routeModel.destinationCoords,
-        ];
+        _currentPolylinePoints = [origin, destination];
       });
       print('⚠️ Using fallback straight line due to API error');
-      print('⚠️ Fallback points: Origin ${routeModel.originCoords}, Destination ${routeModel.destinationCoords}');
-      print('⚠️ _currentPolylinePoints now has ${_currentPolylinePoints.length} points');
       
       // Still center camera on origin/destination
       Future.delayed(const Duration(milliseconds: 500), () {
-        _fitRouteBounds(routeModel.originCoords, routeModel.destinationCoords);
+        _fitRouteBounds(origin, destination);
       });
     }
   }
@@ -202,6 +277,12 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     try {
       await _mqttService.connect();
 
+      // TODO: Subscribe to MQTT topic for specific bus when tripSelection is available
+      // If widget.tripSelection != null, subscribe to:
+      //   rapidkl/bus/${widget.tripSelection!.bus.id}/location
+      // or:
+      //   rapidkl/bus/${widget.tripSelection!.bus.code}/location
+      // For now, subscribing to all routes as fallback
       await _mqttService.subscribeToAllRoutes();
 
       _sub = _mqttService.busLocationStream.listen((location) {
@@ -286,11 +367,46 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
 
   @override
   Widget build(BuildContext context) {
-    // Get current route model
-    final currentRoute = allRoutes.firstWhere(
-      (route) => route.id == _selectedRouteId,
-      orElse: () => allRoutes.first,
-    );
+    // Determine route label, name, origin, destination based on trip selection
+    String routeLabel;
+    String routeName;
+    String routeOrigin;
+    String routeDestination;
+    LatLng routeOriginCoords;
+    LatLng routeDestinationCoords;
+    String routeFare;
+    String routeOperatingHours = '6:00 AM - 11:00 PM'; // Default
+    
+    if (widget.tripSelection != null) {
+      // Use trip selection data
+      routeLabel = widget.tripSelection!.route.code;
+      routeName = widget.tripSelection!.route.name;
+      routeOrigin = widget.tripSelection!.fromStop.name;
+      routeDestination = widget.tripSelection!.toStop.name;
+      routeOriginCoords = LatLng(
+        widget.tripSelection!.fromStop.latitude,
+        widget.tripSelection!.fromStop.longitude,
+      );
+      routeDestinationCoords = LatLng(
+        widget.tripSelection!.toStop.latitude,
+        widget.tripSelection!.toStop.longitude,
+      );
+      routeFare = 'RM ${widget.tripSelection!.route.baseFare.toStringAsFixed(2)}';
+    } else {
+      // Legacy: Use hardcoded route model
+      final currentRoute = allRoutes.firstWhere(
+        (route) => route.id == _selectedRouteId,
+        orElse: () => allRoutes.first,
+      );
+      routeLabel = currentRoute.label;
+      routeName = currentRoute.name;
+      routeOrigin = currentRoute.origin;
+      routeDestination = currentRoute.destination;
+      routeOriginCoords = currentRoute.originCoords;
+      routeDestinationCoords = currentRoute.destinationCoords;
+      routeFare = currentRoute.fare;
+      routeOperatingHours = currentRoute.operatingHours;
+    }
 
     final busesOnRoute =
         _routeBusPositions[_selectedRouteId] ?? <String, LatLng>{};
@@ -322,33 +438,36 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
       // Read the status for this bus
       final status = _routeBusStatus[_selectedRouteId]?[busId] ?? 'In Service';
       
-      // Determine marker color: Priority 1 = Signal Health, Priority 2 = Bus Status
-      double markerHue;
+      // Determine display status text and appropriate colored icon
       String displayStatus;
+      BitmapDescriptor markerIcon;
       
-      // First Check: Stale signal (>30 seconds)
       if (staleness > 30) {
-        markerHue = BitmapDescriptor.hueYellow;
+        // 🟡 Weak signal - use yellow bus icon (prioritized over status)
         displayStatus = 'Signal Weak';
-      } 
-      // Second Check: Good signal, check bus status
-      else {
+        markerIcon = _busIconYellow ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueYellow);
+      } else if (status == 'Breakdown') {
+        // 🔴 Breakdown - use red bus icon
+        displayStatus = 'Breakdown';
+        markerIcon = _busIconRed ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed);
+      } else if (status == 'Delayed') {
+        // 🟠 Delayed - use orange bus icon
+        displayStatus = 'Delayed';
+        markerIcon = _busIconOrange ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange);
+      } else if (status == 'Full Capacity') {
+        // 🔵 Full capacity - use blue bus icon
+        displayStatus = 'Full Capacity';
+        markerIcon = _busIconBlue ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure);
+      } else {
+        // 🟢 In Service (normal) - use green bus icon
         displayStatus = status;
-        if (status == 'Breakdown') {
-          markerHue = BitmapDescriptor.hueRed;
-        } else if (status == 'Delayed') {
-          markerHue = BitmapDescriptor.hueOrange;
-        } else if (status == 'Full Capacity') {
-          markerHue = BitmapDescriptor.hueAzure;
-        } else {
-          markerHue = BitmapDescriptor.hueGreen;
-        }
+        markerIcon = _busIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen);
       }
 
       return Marker(
         markerId: MarkerId('bus_${_selectedRouteId}_$busId'),
         position: pos,
-        icon: BitmapDescriptor.defaultMarkerWithHue(markerHue),
+        icon: markerIcon,
         infoWindow: InfoWindow(
           title: 'Bus $busId',
           snippet: 'Status: $displayStatus',
@@ -361,33 +480,37 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
       );
     }).toSet();
 
-    // Add origin and destination markers
+    // Add From and To stop markers with distinct colors
     if (_currentPolylinePoints.isNotEmpty) {
-      print('🗺️ Adding origin marker at: ${currentRoute.originCoords}');
-      print('🗺️ Adding destination marker at: ${currentRoute.destinationCoords}');
+      print('🗺️ Adding From marker (blue) at: $routeOriginCoords');
+      print('🗺️ Adding To marker (red) at: $routeDestinationCoords');
       
+      // From Stop - Blue Marker
       markers.add(
         Marker(
-          markerId: const MarkerId('route_origin'),
-          position: currentRoute.originCoords,
-          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
+          markerId: const MarkerId('from_stop'),
+          position: routeOriginCoords,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
           infoWindow: InfoWindow(
-            title: '🚏 ${currentRoute.origin}',
-            snippet: 'Origin',
+            title: 'From: $routeOrigin',
+            snippet: 'Starting point',
           ),
         ),
       );
+      
+      // To Stop - Red Marker
       markers.add(
         Marker(
-          markerId: const MarkerId('route_destination'),
-          position: currentRoute.destinationCoords,
-          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet),
+          markerId: const MarkerId('to_stop'),
+          position: routeDestinationCoords,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
           infoWindow: InfoWindow(
-            title: '🚏 ${currentRoute.destination}',
+            title: 'To: $routeDestination',
             snippet: 'Destination',
           ),
         ),
       );
+      
       print('🗺️ Total markers on map: ${markers.length}');
     } else {
       print('🗺️ NO MARKERS - _currentPolylinePoints is empty, skipping origin/destination markers');
@@ -503,7 +626,7 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(
-                      currentRoute.label,
+                      routeLabel,
                       style: const TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.bold,
@@ -512,14 +635,14 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  // Origin → Destination
+                  // Route Name and Direction
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          currentRoute.name,
+                          routeName,
                           style: const TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.bold,
@@ -528,40 +651,94 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
                           overflow: TextOverflow.ellipsis,
                         ),
                         const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Flexible(
-                              child: Text(
-                                currentRoute.origin,
-                                style: TextStyle(
-                                  fontSize: 12,
+                        
+                        // Show specific trip direction if tripSelection is available
+                        if (widget.tripSelection != null) ...[
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.circle,
+                                size: 8,
+                                color: Colors.blue.shade600,
+                              ),
+                              const SizedBox(width: 6),
+                              Flexible(
+                                child: Text(
+                                  widget.tripSelection!.fromStop.name,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.blue.shade700,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 6),
+                                child: Icon(
+                                  Icons.arrow_forward,
+                                  size: 14,
+                                  color: Colors.grey[700],
+                                ),
+                              ),
+                              Flexible(
+                                child: Text(
+                                  widget.tripSelection!.toStop.name,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.red.shade700,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Icon(
+                                Icons.circle,
+                                size: 8,
+                                color: Colors.red.shade600,
+                              ),
+                            ],
+                          ),
+                        ] else ...[
+                          // Legacy: Show generic origin → destination
+                          Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  routeOrigin,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey[600],
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 4),
+                                child: Icon(
+                                  Icons.arrow_forward,
+                                  size: 12,
                                   color: Colors.grey[600],
                                 ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
                               ),
-                            ),
-                            Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 4),
-                              child: Icon(
-                                Icons.arrow_forward,
-                                size: 12,
-                                color: Colors.grey[600],
-                              ),
-                            ),
-                            Flexible(
-                              child: Text(
-                                currentRoute.destination,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.grey[600],
+                              Flexible(
+                                child: Text(
+                                  routeDestination,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey[600],
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
                               ),
-                            ),
-                          ],
-                        ),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -600,45 +777,66 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
                       Row(
                         children: [
                           Icon(
-                            currentRoute.fare.toLowerCase() == 'free'
+                            routeFare.toLowerCase() == 'free'
                                 ? Icons.star
                                 : Icons.payment,
                             size: 18,
-                            color: currentRoute.fare.toLowerCase() == 'free'
+                            color: routeFare.toLowerCase() == 'free'
                                 ? Colors.green
                                 : Theme.of(context).primaryColor,
                           ),
                           const SizedBox(width: 6),
                           Text(
-                            currentRoute.fare,
+                            routeFare,
                             style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
-                              color: currentRoute.fare.toLowerCase() == 'free'
+                              color: routeFare.toLowerCase() == 'free'
                                   ? Colors.green
                                   : Theme.of(context).primaryColor,
                             ),
                           ),
                         ],
                       ),
-                      // Operating Hours
-                      Row(
-                        children: [
-                          Icon(
-                            Icons.access_time,
-                            size: 16,
-                            color: Colors.grey[600],
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            currentRoute.operatingHours,
-                            style: TextStyle(
-                              fontSize: 13,
+                      // Operating Hours (if not using trip selection)
+                      if (widget.tripSelection == null)
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.access_time,
+                              size: 16,
                               color: Colors.grey[600],
                             ),
-                          ),
-                        ],
-                      ),
+                            const SizedBox(width: 6),
+                            Text(
+                              routeOperatingHours,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.grey[600],
+                              ),
+                            ),
+                          ],
+                        ),
+                      // Selected bus info (if using trip selection)
+                      if (widget.tripSelection != null)
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.directions_bus,
+                              size: 16,
+                              color: Colors.grey[600],
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Bus ${widget.tripSelection!.bus.code} (${widget.tripSelection!.bus.plateNo})',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.grey[600],
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
                     ],
                   ),
                   const SizedBox(height: 14),
@@ -694,42 +892,83 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
                     ),
                     const SizedBox(height: 12),
                     
-                    // ETA and Active buses
+                    // ETA and Active buses (Status-aware styling)
                     Row(
                       children: [
                         if (focusedPos != null && _destination != null) ...[
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.green.shade50,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: Colors.green.shade300,
-                                width: 1.5,
-                              ),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  Icons.access_time,
-                                  size: 14,
-                                  color: Colors.green.shade700,
+                          // Determine ETA styling based on bus status
+                          Builder(
+                            builder: (context) {
+                              Color etaBgColor;
+                              Color etaBorderColor;
+                              Color etaTextColor;
+                              IconData etaIcon;
+                              String etaText;
+                              
+                              if (focusedStatus == 'Breakdown') {
+                                // 🔴 Breakdown - Show unavailable with red/grey styling
+                                etaBgColor = Colors.red.shade50;
+                                etaBorderColor = Colors.red.shade300;
+                                etaTextColor = Colors.red.shade700;
+                                etaIcon = Icons.warning;
+                                etaText = 'ETA: Unavailable';
+                              } else if (focusedStatus == 'Delayed') {
+                                // 🟠 Delayed - Show ETA with orange styling
+                                etaBgColor = Colors.orange.shade50;
+                                etaBorderColor = Colors.orange.shade300;
+                                etaTextColor = Colors.orange.shade700;
+                                etaIcon = Icons.access_time;
+                                etaText = 'ETA: ${_calculateETA(focusedPos)}';
+                              } else if (focusedStatus == 'Full Capacity') {
+                                // 🔵 Full Capacity - Show ETA with blue styling
+                                etaBgColor = Colors.blue.shade50;
+                                etaBorderColor = Colors.blue.shade300;
+                                etaTextColor = Colors.blue.shade700;
+                                etaIcon = Icons.access_time;
+                                etaText = 'ETA: ${_calculateETA(focusedPos)}';
+                              } else {
+                                // 🟢 Normal/In Service - Show ETA with green styling
+                                etaBgColor = Colors.green.shade50;
+                                etaBorderColor = Colors.green.shade300;
+                                etaTextColor = Colors.green.shade700;
+                                etaIcon = Icons.access_time;
+                                etaText = 'ETA: ${_calculateETA(focusedPos)}';
+                              }
+                              
+                              return Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 6,
                                 ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  'ETA: ${_calculateETA(focusedPos)}',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.green.shade700,
+                                decoration: BoxDecoration(
+                                  color: etaBgColor,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                    color: etaBorderColor,
+                                    width: 1.5,
                                   ),
                                 ),
-                              ],
-                            ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      etaIcon,
+                                      size: 14,
+                                      color: etaTextColor,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      etaText,
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                        color: etaTextColor,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
                           ),
                           const SizedBox(width: 10),
                         ],
