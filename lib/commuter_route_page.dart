@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'commuter_map_page.dart';
 import 'route_data_model.dart';
+import 'pages/route_search_page.dart';
 
 class CommuterRoutesPage extends StatefulWidget {
   const CommuterRoutesPage({super.key});
@@ -54,6 +55,29 @@ class _CommuterRoutesPageState extends State<CommuterRoutesPage> {
       ),
       body: Column(
         children: [
+          // Stop-to-Stop Search Button
+          Container(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+            child: ElevatedButton.icon(
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const RouteSearchPage(),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.location_searching),
+              label: const Text('Stop-to-Stop Search'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                minimumSize: const Size(double.infinity, 0),
+              ),
+            ),
+          ),
+          
           // Search Bar Section
           Container(
             color: Theme.of(context).scaffoldBackgroundColor,

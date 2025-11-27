@@ -3,10 +3,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:http/http.dart' as http;
 
 import 'mqtt_service.dart';
 import 'route_data_model.dart';
 import 'services/directions_service.dart';
+import 'keys/directions_api_key.dart';
 
 class CommuterMapPage extends StatefulWidget {
   final String? initialRouteId; // Optional: Pre-select a specific route
@@ -72,6 +74,25 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     });
   }
 
+  /// Debug function to test Directions API via raw HTTP
+  Future<void> testDirectionsFromApp() async {
+    debugPrint('Using Directions key prefix: ${directionsApiKey.substring(0, 8)}');
+    final url = Uri.parse(
+      'https://maps.googleapis.com/maps/api/directions/json'
+      '?origin=3.0738,101.5183'
+      '&destination=3.1390,101.6869'
+      '&mode=driving'
+      '&key=$directionsApiKey',
+    );
+    try {
+      final response = await http.get(url);
+      debugPrint('Status code: ${response.statusCode}');
+      debugPrint('Body: ${response.body}');
+    } catch (e) {
+      debugPrint('HTTP error: $e');
+    }
+  }
+
   /// Fetch route polyline from Directions API
   Future<void> _fetchRoutePolyline() async {
     print('📍 Starting to fetch route for: $_selectedRouteId');
@@ -118,6 +139,8 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
           ];
         });
         print('⚠️ No route points from API - using fallback straight line for $_selectedRouteId');
+        print('⚠️ Fallback points: Origin ${routeModel.originCoords}, Destination ${routeModel.destinationCoords}');
+        print('⚠️ _currentPolylinePoints now has ${_currentPolylinePoints.length} points');
         
         // Still center camera on origin/destination
         Future.delayed(const Duration(milliseconds: 500), () {
@@ -135,6 +158,8 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
         ];
       });
       print('⚠️ Using fallback straight line due to API error');
+      print('⚠️ Fallback points: Origin ${routeModel.originCoords}, Destination ${routeModel.destinationCoords}');
+      print('⚠️ _currentPolylinePoints now has ${_currentPolylinePoints.length} points');
       
       // Still center camera on origin/destination
       Future.delayed(const Duration(milliseconds: 500), () {
@@ -338,6 +363,9 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
 
     // Add origin and destination markers
     if (_currentPolylinePoints.isNotEmpty) {
+      print('🗺️ Adding origin marker at: ${currentRoute.originCoords}');
+      print('🗺️ Adding destination marker at: ${currentRoute.destinationCoords}');
+      
       markers.add(
         Marker(
           markerId: const MarkerId('route_origin'),
@@ -360,6 +388,9 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
           ),
         ),
       );
+      print('🗺️ Total markers on map: ${markers.length}');
+    } else {
+      print('🗺️ NO MARKERS - _currentPolylinePoints is empty, skipping origin/destination markers');
     }
 
     final focusedBusId = _focusedBusId;
@@ -406,16 +437,23 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     // Build polyline from current route points
     final Set<Polyline> polylines = {};
     if (_currentPolylinePoints.isNotEmpty) {
+      print('🗺️ Building polyline with ${_currentPolylinePoints.length} points');
+      print('🗺️ First point: ${_currentPolylinePoints.first}');
+      print('🗺️ Last point: ${_currentPolylinePoints.last}');
+      
       polylines.add(
         Polyline(
           polylineId: PolylineId('${_selectedRouteId}_path'),
           points: _currentPolylinePoints,
-          color: Theme.of(context).primaryColor,
+          color: Colors.blue, // Changed from teal to blue
           width: 5,
           startCap: Cap.roundCap,
           endCap: Cap.roundCap,
         ),
       );
+      print('🗺️ Polyline added to map');
+    } else {
+      print('🗺️ NO POLYLINE POINTS - _currentPolylinePoints is empty!');
     }
 
     return Scaffold(
@@ -746,6 +784,21 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
                   ],
                 ],
               ),
+            ),
+          ),
+
+          // Debug button for testing Directions API
+          Positioned(
+            top: 100,
+            right: 12,
+            child: ElevatedButton(
+              onPressed: testDirectionsFromApp,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.deepPurple,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              ),
+              child: const Text('Test Directions API'),
             ),
           ),
         ],

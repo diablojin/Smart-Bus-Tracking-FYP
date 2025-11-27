@@ -2,10 +2,9 @@ import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 class DirectionsService {
-  // TODO: SECURITY WARNING - Move this to environment variables or secure config
-  // NEVER commit API keys to version control
-  // For now, replace with your own key
-  static const String _apiKey = 'AIzaSyDXwkPTUGqpfQJO6YnztAuYOzAw7pvcQeo'; 
+  // Dedicated API key for Directions API only
+  // Restrictions: None for Application, Directions API only for API restrictions
+  static const String _apiKey = 'AIzaSyDmCgQ3WC64FptH1e5O5IUaP6gxMEaeIX0'; 
 
   Future<List<LatLng>> getRoute(LatLng start, LatLng end) async {
     // Initialize with API key
