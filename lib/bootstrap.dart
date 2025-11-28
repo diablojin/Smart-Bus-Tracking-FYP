@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'auth_page.dart';
 import 'commuter_home_page.dart';
 import 'driver_home_page.dart';
+import 'services/profile_service.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -29,11 +30,7 @@ class _BootstrapState extends State<Bootstrap> {
     if (session == null) {
       target = const AuthPage();
     } else {
-      final user = session.user;
-      final metadata = user.userMetadata ?? {};
-      final rawRole = metadata['role'];
-      final role = (rawRole is String) ? rawRole : 'commuter';
-
+      final role = await ProfileService.getCurrentUserRole();
       if (role == 'driver') {
         target = const DriverHomePage();
       } else {

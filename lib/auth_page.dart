@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'commuter_home_page.dart';
 import 'driver_home_page.dart';
+import 'services/profile_service.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -35,17 +36,77 @@ class _AuthPageState extends State<AuthPage> {
     });
   }
 
-  Future<String> _getUserRole() async {
-    final user = supabase.auth.currentUser;
-    if (user == null) return 'commuter';
-
-    final metadata = user.userMetadata ?? {};
-    final rawRole = metadata['role'];
-
-    if (rawRole is String && (rawRole == 'driver' || rawRole == 'commuter')) {
-      return rawRole;
+  /// Converts Supabase auth errors to user-friendly messages
+  String _getErrorMessage(dynamic error) {
+    final errorStr = error.toString().toLowerCase();
+    
+    // Extract message from AuthException if available
+    String message = '';
+    if (error is AuthException) {
+      message = error.message.toLowerCase();
     }
-    return 'commuter';
+    
+    // Check for specific error codes in the error string
+    if (errorStr.contains('code: invalid_credentials') || 
+        errorStr.contains('invalid_credentials') ||
+        (message.contains('invalid') && message.contains('credential'))) {
+      return 'Invalid email or password. Please check your credentials.';
+    }
+    
+    if (errorStr.contains('code: email_not_confirmed') || 
+        errorStr.contains('email_not_confirmed')) {
+      return 'Please confirm your email address before logging in.';
+    }
+    
+    if (errorStr.contains('code: user_not_found') || 
+        errorStr.contains('user_not_found')) {
+      return 'No account found with this email address.';
+    }
+    
+    if (errorStr.contains('code: email_already_registered') || 
+        errorStr.contains('email_already_registered') ||
+        (message.contains('email') && message.contains('already'))) {
+      return 'An account with this email already exists.';
+    }
+    
+    if (errorStr.contains('code: weak_password') || 
+        errorStr.contains('weak_password') ||
+        (message.contains('password') && message.contains('weak'))) {
+      return 'Password is too weak. Please use a stronger password.';
+    }
+    
+    // Check status codes
+    if (errorStr.contains('statuscode: 400') || errorStr.contains('statuscode:400')) {
+      if (message.contains('invalid') || message.contains('credential')) {
+        return 'Invalid email or password. Please check your credentials.';
+      }
+      return 'Invalid input. Please check your email and password.';
+    }
+    
+    if (errorStr.contains('statuscode: 401') || errorStr.contains('statuscode:401')) {
+      return 'Invalid email or password. Please try again.';
+    }
+    
+    if (errorStr.contains('statuscode: 422') || errorStr.contains('statuscode:422')) {
+      return 'Invalid email format. Please enter a valid email address.';
+    }
+    
+    // Handle generic error patterns
+    if (errorStr.contains('invalid') && 
+        (errorStr.contains('credential') || errorStr.contains('login'))) {
+      return 'Invalid email or password. Please check your credentials.';
+    }
+    
+    if (errorStr.contains('network') || errorStr.contains('connection')) {
+      return 'Network error. Please check your internet connection.';
+    }
+    
+    if (errorStr.contains('email') && errorStr.contains('already')) {
+      return 'An account with this email already exists.';
+    }
+
+    // Default fallback
+    return 'An error occurred. Please try again.';
   }
 
   Future<void> _submit() async {
@@ -92,20 +153,29 @@ class _AuthPageState extends State<AuthPage> {
         }
       }
 
-      // Decide home screen based on role
-      final role = await _getUserRole();
+      // Decide home screen based on role from profiles table
+      final role = await ProfileService.getCurrentUserRole();
       if (!mounted) return;
 
-      final Widget target =
-          (role == 'driver') ? const DriverHomePage() : const CommuterHomePage();
-
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => target),
-      );
+      if (role == 'driver') {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const DriverHomePage()),
+          (route) => false,
+        );
+      } else {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const CommuterHomePage()),
+          (route) => false,
+        );
+      }
     } catch (error) {
       if (!mounted) return;
+      final errorMessage = _getErrorMessage(error);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(error.toString())),
+        SnackBar(
+          content: Text(errorMessage),
+          backgroundColor: Colors.red,
+        ),
       );
     } finally {
       if (mounted) {

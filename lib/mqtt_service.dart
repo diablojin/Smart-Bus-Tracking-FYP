@@ -1,247 +1,232 @@
+// mqtt_service.dart
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 
-class BusLocation {
-  final String busId;
-  final String routeId;
+/// Single message used by CommuterMapPage
+/// 
+/// Note: routeId and busId are human-readable CODES (strings), not numeric IDs.
+/// - routeId: route code from routes.code, e.g. "750"
+/// - busId: bus code from buses.code, e.g. "750-A"
+class BusLocationUpdate {
+  final String routeId; // Route code (e.g. "750"), not numeric ID
+  final String busId; // Bus code (e.g. "750-A"), not numeric ID
   final double lat;
   final double lng;
   final DateTime timestamp;
-  final String status; // 'In Service', 'Delayed', 'Breakdown'
+  final String status;
 
-  BusLocation({
-    required this.busId,
+  BusLocationUpdate({
     required this.routeId,
+    required this.busId,
     required this.lat,
     required this.lng,
     required this.timestamp,
-    this.status = 'In Service',
+    required this.status,
   });
-
-  factory BusLocation.fromJson(Map<String, dynamic> json) {
-    return BusLocation(
-      busId: json['busId'] as String,
-      routeId: json['routeId'] as String,
-      lat: (json['lat'] as num).toDouble(),
-      lng: (json['lng'] as num).toDouble(),
-      timestamp: DateTime.fromMillisecondsSinceEpoch(
-        (json['timestamp'] as int) * 1000,
-      ),
-      status: json['status'] as String? ?? 'In Service',
-    );
-  }
 }
 
 class MqttService {
-  // Singleton
-  MqttService._internal();
-  static final MqttService _instance = MqttService._internal();
-  factory MqttService() => _instance;
-
-  static const String _broker =
-      '39816d9e4ba848f29f7a4a572d76b661.s1.eu.hivemq.cloud';
-  static const int _port = 8883;
-
-  // TODO: replace these with the credentials YOU created
+  // TODO: put your real HiveMQ host/port/credentials here
+  static const String _broker = '39816d9e4ba848f29f7a4a572d76b661.s1.eu.hivemq.cloud'; // e.g. xxx.s2.eu.hivemq.cloud
+  static const int _port = 8883; // TLS port
   static const String _username = 'fyp_mqtt';
   static const String _password = 'Fyp_mqtt123';
 
-  MqttServerClient? _client;
-  final _busLocationController = StreamController<BusLocation>.broadcast();
+  late final MqttServerClient _client;
 
-  Stream<BusLocation> get busLocationStream => _busLocationController.stream;
+  bool _isConnected = false;
+  bool _isConnecting = false;
 
-  bool get isConnected =>
-      _client?.connectionStatus?.state == MqttConnectionState.connected;
+  final _busLocationController =
+      StreamController<BusLocationUpdate>.broadcast();
+
+  Stream<BusLocationUpdate> get busLocationStream =>
+      _busLocationController.stream;
+
+  MqttService() {
+    _client = MqttServerClient(_broker, '');
+    _client.port = _port;
+    _client.keepAlivePeriod = 30;
+    _client.logging(on: false);
+
+    // TLS
+    _client.secure = true;
+    _client.securityContext = SecurityContext.defaultContext;
+
+    _client.onDisconnected = _onDisconnected;
+  }
 
   Future<void> connect() async {
-    if (isConnected) return;
+    if (_isConnected || _isConnecting) return;
 
-    final client = MqttServerClient(_broker, '');
-    client.logging(on: true); // turn on while debugging
-    client.port = _port;
-    client.secure = true;
-    client.keepAlivePeriod = 20;
-    client.onDisconnected = _onDisconnected;
+    _isConnecting = true;
 
-    client.onConnected = () => print('MQTT connected');
-    client.onSubscribed = (topic) => print('Subscribed to $topic');
+    final clientId =
+        'flutter_${DateTime.now().millisecondsSinceEpoch.toString()}';
 
-    final connMess = MqttConnectMessage()
-        .withClientIdentifier(
-          'flutter-client-${DateTime.now().millisecondsSinceEpoch}',
-        )
-        .withWillQos(MqttQos.atMostOnce)
-        .authenticateAs(_username, _password);
+    final connMessage = MqttConnectMessage()
+        .withClientIdentifier(clientId)
+        .authenticateAs(_username, _password)
+        .startClean();
 
-    client.connectionMessage = connMess;
+    _client.connectionMessage = connMessage;
 
     try {
-      final res = await client.connect();
-      print('MQTT: connect() return: $res');
-      print(
-        'MQTT: status: ${client.connectionStatus?.state}, '
-        'code: ${client.connectionStatus?.returnCode}',
-      );
+      final status = await _client.connect();
+      if (status?.state == MqttConnectionState.connected) {
+        _isConnected = true;
+        _isConnecting = false;
 
-      if (client.connectionStatus?.state == MqttConnectionState.connected) {
-        _client = client;
-        print('MQTT: Connected to broker');
+        // Listen for ANY incoming messages (used by commuter)
+        _client.updates?.listen(_handleIncomingMessages);
       } else {
-        print('MQTT: Connection failed, disconnecting');
-        client.disconnect();
-        throw Exception(
-          'Connection failed: ${client.connectionStatus?.returnCode}',
-        );
+        _isConnecting = false;
+        throw Exception('MQTT connect failed: ${status?.state}');
       }
     } catch (e) {
-      print('MQTT: Connection failed - $e');
-      client.disconnect();
+      _isConnecting = false;
       rethrow;
     }
   }
 
+  bool get isConnected =>
+      _client.connectionStatus?.state == MqttConnectionState.connected;
+
   void _onDisconnected() {
-    print('MQTT: Disconnected');
+    _isConnected = false;
   }
 
-    /// Subscribe to all buses using wildcard: bus/location/#
-  Future<void> subscribeToAllBuses() async {
-    if (!isConnected) {
-      await connect();
+  void disconnect() {
+    if (_isConnected) {
+      _client.disconnect();
     }
-
-    const topic = 'bus/location/#';
-    print('MQTT: Subscribing to all buses on $topic');
-    _client!.subscribe(topic, MqttQos.atMostOnce);
-
-    _client!.updates?.listen((List<MqttReceivedMessage<MqttMessage>> events) {
-      final recMess = events.first.payload as MqttPublishMessage;
-      final payloadBytes = recMess.payload.message;
-      final payloadString = utf8.decode(payloadBytes);
-      final topic = events.first.topic;
-
-      print('MQTT: Message received on topic $topic -> $payloadString');
-
-      try {
-        final data = jsonDecode(payloadString) as Map<String, dynamic>;
-        final location = BusLocation.fromJson(data);
-        print('MQTT: Parsed BusLocation: '
-            'busId=${location.busId}, '
-            'lat=${location.lat}, lng=${location.lng}');
-        _busLocationController.add(location);
-      } catch (e) {
-        print('MQTT: Failed to parse payload: $payloadString, error: $e');
-      }
-    });
   }
 
-  /// Publish a location for a bus
-    /// Publish a location for a bus on a specific route
-  Future<void> publishLocation({
-    required String routeId,
-    required String busId,
-    required double lat,
-    required double lng,
-    String? status,
-  }) async {
-    if (!isConnected) {
-      await connect();
-    }
+  // ---------------------------------------------------------------------------
+  // COMMUTER SIDE: subscribe & decode messages
+  // ---------------------------------------------------------------------------
 
-    final topic = 'bus/location/$routeId/$busId';
-
-    final payload = jsonEncode({
-      'busId': busId,
-      'routeId': routeId,
-      'lat': lat,
-      'lng': lng,
-      'timestamp': DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      if (status != null) 'status': status,
-    });
-
-    final builder = MqttClientPayloadBuilder();
-    builder.addString(payload);
-
-    _client!.publishMessage(
-      topic,
-      MqttQos.atMostOnce,
-      builder.payload!,
-    );
-
-    print('MQTT: Published to $topic -> $payload');
-  }
-
-    /// Subscribe to all routes and all buses: bus/location/#
+  /// Subscribe to all bus location topics.
+  /// 
+  /// Topic pattern: rapidkl/bus/+/location
+  /// where + matches any bus code (e.g. "750-A", "750-B")
   Future<void> subscribeToAllRoutes() async {
-    if (!isConnected) {
-      await connect();
-    }
+    await connect();
+    const topic = 'rapidkl/bus/+/location';
+    _client.subscribe(topic, MqttQos.atLeastOnce);
+  }
 
-    const topic = 'bus/location/#';
-    print('MQTT: Subscribing to all routes on $topic');
-    _client!.subscribe(topic, MqttQos.atMostOnce);
-
-    _client!.updates?.listen((List<MqttReceivedMessage<MqttMessage>> events) {
-      final recMess = events.first.payload as MqttPublishMessage;
-      final payloadBytes = recMess.payload.message;
-      final payloadString = utf8.decode(payloadBytes);
-      final topic = events.first.topic;
-
-      print('MQTT: Message received on topic $topic -> $payloadString');
-
+  /// Handle incoming MQTT messages and decode them into BusLocationUpdate.
+  /// 
+  /// Expected JSON payload format:
+  /// {
+  ///   "routeId": "<routeCode string, e.g. '750'>",
+  ///   "busId": "<busCode string, e.g. '750-A'>",
+  ///   "lat": <double>,
+  ///   "lng": <double>,
+  ///   "status": "<string status e.g. 'In Service'>",
+  ///   "timestamp": "<ISO8601 UTC timestamp>"
+  /// }
+  void _handleIncomingMessages(List<MqttReceivedMessage<MqttMessage>> events) {
+    for (final event in events) {
       try {
-        final data = jsonDecode(payloadString) as Map<String, dynamic>;
+        final message = event.payload as MqttPublishMessage;
+        final payloadString =
+            MqttPublishPayload.bytesToStringAsString(message.payload.message);
 
-        // Try to derive routeId / busId from JSON or from topic
-        String routeId;
-        String busId;
+        final Map<String, dynamic> data = jsonDecode(payloadString);
 
-        if (data.containsKey('routeId')) {
-          routeId = data['routeId'] as String;
-        } else {
-          // topic format: bus/location/{routeId}/{busId}
-          final parts = topic.split('/');
-          routeId = parts.length >= 3 ? parts[2] : 'unknown_route';
+        // Extract routeId and busId as strings (codes, not numeric IDs)
+        final routeId = data['routeId'] as String?;
+        final busId = data['busId'] as String?;
+        final lat = data['lat'];
+        final lng = data['lng'];
+        final timestampStr = data['timestamp'] as String?;
+        final status = (data['status'] as String?) ?? 'In Service';
+
+        // Validate required fields
+        if (routeId == null || busId == null || lat == null || lng == null || timestampStr == null) {
+          continue; // Skip malformed messages
         }
 
-        if (data.containsKey('busId')) {
-          busId = data['busId'] as String;
-        } else {
-          final parts = topic.split('/');
-          busId = parts.length >= 4 ? parts[3] : 'unknown_bus';
-        }
-
-        final location = BusLocation(
-          busId: busId,
-          routeId: routeId,
-          lat: (data['lat'] as num).toDouble(),
-          lng: (data['lng'] as num).toDouble(),
-          timestamp: DateTime.fromMillisecondsSinceEpoch(
-            (data['timestamp'] as int) * 1000,
-          ),
-          status: data['status'] as String? ?? 'In Service',
+        final update = BusLocationUpdate(
+          routeId: routeId, // Route code (e.g. "750")
+          busId: busId, // Bus code (e.g. "750-A")
+          lat: (lat as num).toDouble(),
+          lng: (lng as num).toDouble(),
+          timestamp: DateTime.parse(timestampStr),
+          status: status,
         );
 
-        print('MQTT: Parsed BusLocation: '
-            'routeId=${location.routeId}, busId=${location.busId}, '
-            'lat=${location.lat}, lng=${location.lng}');
-
-        _busLocationController.add(location);
+        _busLocationController.add(update);
       } catch (e) {
-        print('MQTT: Failed to parse payload: $payloadString, error: $e');
+        // Silently skip malformed messages to prevent crashes
+        // In production, you might want to log this for debugging
+        continue;
       }
-    });
+    }
   }
 
-  Future<void> disconnect() async {
-    if (_client != null) {
-      print("MQTT: Disconnecting...");
-      _client!.disconnect();
+  // ---------------------------------------------------------------------------
+  // DRIVER SIDE: publish GPS updates
+  // ---------------------------------------------------------------------------
+
+  /// Publish a single GPS update for a bus.
+  ///
+  /// Parameters:
+  /// - routeId: Route code (string, e.g. "750"), not numeric ID
+  /// - busId: Bus code (string, e.g. "750-A"), not numeric ID
+  /// - lat, lng: GPS coordinates
+  /// - status: Bus status string (e.g. "In Service", "Delayed", "Breakdown")
+  ///
+  /// Publishes to topic: rapidkl/bus/{busCode}/location
+  /// Payload format matches the JSON structure expected by commuter subscribers.
+  Future<void> publishBusLocation({
+    required String routeId, // Route code (e.g. "750")
+    required String busId, // Bus code (e.g. "750-A")
+    required double lat,
+    required double lng,
+    String status = 'In Service',
+  }) async {
+    await connect(); // Ensure connection before publishing
+
+    if (!isConnected) {
+      throw Exception('MQTT client is not connected');
     }
-    _client = null;
-    print("MQTT: Disconnected & cleaned up");
+
+    // Topic format: rapidkl/bus/{busCode}/location
+    // where busCode is the bus code (e.g. "750-A"), not a numeric ID
+    final topic = 'rapidkl/bus/$busId/location';
+
+    // Construct JSON payload matching the expected format
+    final payloadMap = {
+      'routeId': routeId, // Route code (string)
+      'busId': busId, // Bus code (string)
+      'lat': lat,
+      'lng': lng,
+      'status': status,
+      'timestamp': DateTime.now().toUtc().toIso8601String(),
+    };
+
+    final payloadString = jsonEncode(payloadMap);
+
+    final builder = MqttClientPayloadBuilder();
+    builder.addString(payloadString);
+
+    _client.publishMessage(
+      topic,
+      MqttQos.atLeastOnce,
+      builder.payload!,
+      retain: false,
+    );
+  }
+
+  void dispose() {
+    _busLocationController.close();
+    disconnect();
   }
 }

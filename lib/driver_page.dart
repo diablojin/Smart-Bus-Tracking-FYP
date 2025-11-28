@@ -1,12 +1,13 @@
+// driver_page.dart
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'mqtt_service.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
+
+final supabase = Supabase.instance.client;
 
 class DriverPage extends StatefulWidget {
   const DriverPage({super.key});
@@ -18,581 +19,225 @@ class DriverPage extends StatefulWidget {
 class _DriverPageState extends State<DriverPage> {
   final MqttService _mqttService = MqttService();
 
-  // Assigned driver details (pre-assigned by admin or fetched from Supabase)
-  String _assignedRouteId = 'route_01';
-  String _assignedBusId = 'bus_001';
+  String? _busCode;
+  String? _busPlate;
+  String? _routeCode;
 
-  bool _isTracking = false;
-  String _status = 'Not tracking';
+  bool _isLoadingAssignment = true;
+  bool _isTripActive = false;
+
   Position? _lastPosition;
-  
-  // Bus status for commuters
-  String _currentStatus = 'In Service';
-
   StreamSubscription<Position>? _positionSub;
-  
-  // Route name mapping for display
-  final Map<String, String> _routeNames = {
-    'route_01': 'Wangsa Maju → TARUMT',
-    'route_02': 'Aeon Big Danau Kota → Setapak Central',
-  };
+
+  String _status = 'In Service';
 
   @override
   void initState() {
     super.initState();
-    _initMqtt();
+    _loadDriverAssignment();
   }
 
-  Future<void> _initMqtt() async {
-    setState(() {
-      _status = 'Connecting to MQTT...';
-    });
-
+  // ---------------------------------------------------------------------------
+  // 1. Get bus code, plate number, and route code for this driver from Supabase
+  // ---------------------------------------------------------------------------
+  Future<void> _loadDriverAssignment() async {
     try {
-      await _mqttService.connect();
+      final user = supabase.auth.currentUser;
+      if (user == null) {
+        setState(() => _isLoadingAssignment = false);
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('No logged-in driver.')));
+        return;
+      }
+
+      // drivers.bus_id -> buses.id
+      // buses.route_id -> routes.id
+      //
+      // We pull:
+      // - buses.code      (bus code shown in UI + MQTT busId)
+      // - buses.plate_no  (for display)
+      // - routes.code     (route code, e.g. 801)
+      final data = await supabase
+          .from('drivers')
+          .select('bus_id, buses(code, plate_no, routes(code))')
+          .eq('auth_user_id', user.id)
+          .maybeSingle();
+
+      if (data == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No bus assignment found for this driver.'),
+          ),
+        );
+        return;
+      }
+
+      final busRow = data['buses'] as Map<String, dynamic>?;
+      final busCode = busRow?['code'] as String?;
+      final busPlate = busRow?['plate_no'] as String?;
+
+      final routesRow = busRow?['routes'] as Map<String, dynamic>?;
+      final routeCode = routesRow?['code'] as String?;
+
       setState(() {
-        _status = 'Connected to MQTT. Ready to track.';
+        _busCode = busCode;
+        _busPlate = busPlate;
+        _routeCode = routeCode;
       });
     } catch (e) {
-      setState(() {
-        _status = 'MQTT connection failed: $e';
-      });
-    }
-  }
-
-  Future<bool> _ensureLocationPermission() async {
-    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      setState(() {
-        _status = 'Location services are disabled. Please enable GPS.';
-      });
-      await Geolocator.openLocationSettings();
-      return false;
-    }
-
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        setState(() {
-          _status = 'Location permission denied.';
-        });
-        return false;
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error loading assignment: $e')));
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingAssignment = false);
       }
     }
-
-    if (permission == LocationPermission.deniedForever) {
-      setState(() {
-        _status =
-            'Location permission permanently denied. Please enable in app settings.';
-      });
-      return false;
-    }
-
-    // Permission granted
-    return true;
   }
 
-  Future<void> _startTracking() async {
-    if (_isTracking) return;
+  // ---------------------------------------------------------------------------
+  // 2. Start / stop trip (GPS + MQTT)
+  // ---------------------------------------------------------------------------
 
-    final routeId = _assignedRouteId;
-    final busId = _assignedBusId;
+  Future<void> _toggleTrip() async {
+    if (_isTripActive) {
+      await _stopTrip();
+    } else {
+      await _startTrip();
+    }
+  }
 
-    if (routeId.isEmpty || busId.isEmpty) {
-      setState(() {
-        _status = 'No route or bus assigned.';
-      });
+  Future<void> _startTrip() async {
+    if (_busCode == null || _routeCode == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No bus/route assigned to this driver.')),
+      );
       return;
     }
 
-    if (!_mqttService.isConnected) {
-      await _initMqtt();
-      if (!_mqttService.isConnected) {
+    // Location permission
+    final permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever) {
+      final newPerm = await Geolocator.requestPermission();
+      if (newPerm == LocationPermission.denied ||
+          newPerm == LocationPermission.deniedForever) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Location permission is required.')),
+        );
         return;
       }
     }
 
-    final hasPermission = await _ensureLocationPermission();
-    if (!hasPermission) return;
-
-    // Get storage directory for route logging
-    Directory? dir;
-    try {
-      dir = await getExternalStorageDirectory();
-      if (dir != null) {
-        final logFile = File('${dir.path}/route_log.txt');
-        // Clear old logs - start fresh
-        if (await logFile.exists()) {
-          await logFile.delete();
-          print('🗑️ Old route_log.txt deleted');
-        }
-        print('📁 Route logging to: ${logFile.path}');
-      }
-    } catch (e) {
-      print('⚠️ Could not setup route logging: $e');
+    // Turn on GPS service if off
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enable location services (GPS).')),
+      );
+      return;
     }
 
-    setState(() {
-      _isTracking = true;
-      _status = 'Tracking started for $busId on $routeId';
-    });
-    WakelockPlus.enable();
+    // Connect MQTT once
+    try {
+      await _mqttService.connect();
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('MQTT connection failed: $e')));
+      return;
+    }
 
-    const locationSettings = LocationSettings(
-      accuracy: LocationAccuracy.high,
-      distanceFilter: 5,
-    );
+    // Start streaming GPS → MQTT
+    _positionSub =
+        Geolocator.getPositionStream(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            distanceFilter: 10, // only when moved ≥ 10m
+          ),
+        ).listen((pos) {
+          setState(() => _lastPosition = pos);
 
-    _positionSub = Geolocator.getPositionStream(
-      locationSettings: locationSettings,
-    ).listen((Position position) async {
-      _lastPosition = position;
-
-      // Log coordinates to file
-      if (dir != null) {
-        try {
-          final logLine = 'LatLng(${position.latitude}, ${position.longitude}),\n';
-          final logFile = File('${dir.path}/route_log.txt');
-          await logFile.writeAsString(logLine, mode: FileMode.append);
-          print('📝 Logged: $logLine'.trim());
-        } catch (e) {
-          print('⚠️ Failed to log coordinate: $e');
-        }
-      }
-
-      await _mqttService.publishLocation(
-        routeId: routeId,
-        busId: busId,
-        lat: position.latitude,
-        lng: position.longitude,
-        status: _currentStatus,
-      );
-
-      if (mounted) {
-        setState(() {
-          _status =
-              'Tracking $busId ($routeId) | Lat: ${position.latitude.toStringAsFixed(5)}, '
-              'Lng: ${position.longitude.toStringAsFixed(5)}';
+          _mqttService.publishBusLocation(
+            routeId: _routeCode!,
+            busId: _busCode!,
+            lat: pos.latitude,
+            lng: pos.longitude,
+            status: _status,
+          );
         });
-      }
-    });
+
+    setState(() => _isTripActive = true);
   }
 
-  Future<void> _stopTracking() async {
-    if (!_isTracking) return;
-
+  Future<void> _stopTrip() async {
     await _positionSub?.cancel();
     _positionSub = null;
+    _mqttService.disconnect();
 
-    setState(() {
-      _isTracking = false;
-      _status = 'Tracking stopped';
-    });
-    WakelockPlus.disable();
+    setState(() => _isTripActive = false);
   }
 
   @override
   void dispose() {
     _positionSub?.cancel();
-    WakelockPlus.disable();
+    _mqttService.dispose();
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final pos = _lastPosition;
+  // ---------------------------------------------------------------------------
+  // UI
+  // ---------------------------------------------------------------------------
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Driver Dashboard'),
-        elevation: 0,
-      ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Live Status Card
-              _buildStatusCard(),
-              const SizedBox(height: 24),
-
-              // Trip Configuration Card
-              _buildTripConfigCard(),
-              const SizedBox(height: 24),
-
-              // Action Button (Start or Stop based on tracking state)
-              if (!_isTracking) _buildStartButton() else _buildStopButton(),
-              const SizedBox(height: 24),
-
-              // Status Update Section
-              _buildStatusUpdateSection(),
-              const SizedBox(height: 24),
-
-              // Debug Info (collapsed by default)
-              if (pos != null) _buildDebugInfo(pos),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  // Status Indicator Card
-  Widget _buildStatusCard() {
-    return Card(
-      elevation: 4,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          children: [
-            // Pulsing indicator when tracking
-            if (_isTracking)
-              TweenAnimationBuilder<double>(
-                tween: Tween(begin: 0.0, end: 1.0),
-                duration: const Duration(milliseconds: 1500),
-                builder: (context, value, child) {
-                  return Opacity(
-                    opacity: 0.5 + (value * 0.5),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.green,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: const [
-                          Icon(Icons.wifi_tethering, color: Colors.white, size: 20),
-                          SizedBox(width: 8),
-                          Text(
-                            'Broadcasting Live',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-                onEnd: () {
-                  if (mounted && _isTracking) {
-                    setState(() {}); // Trigger rebuild to restart animation
-                  }
-                },
-              )
-            else
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade300,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: const [
-                    Icon(Icons.schedule, color: Colors.black54, size: 20),
-                    SizedBox(width: 8),
-                    Text(
-                      'Ready to Start',
-                      style: TextStyle(
-                        color: Colors.black54,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            const SizedBox(height: 12),
-            Text(
-              _status,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 14,
-                color: Colors.grey.shade700,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // Current Assignment Card (Read-Only)
-  Widget _buildTripConfigCard() {
-    return Card(
-      color: Colors.white,
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Current Assignment',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Colors.grey.shade800,
-              ),
-            ),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                const Icon(Icons.map, color: Colors.blue, size: 32),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Route',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.black54,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        _routeNames[_assignedRouteId] ?? _assignedRouteId,
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black87,
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                const Icon(Icons.directions_bus, color: Colors.orange, size: 32),
-                const SizedBox(width: 16),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Bus',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.black54,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      _assignedBusId,
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black87,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // Large Start Button
-  Widget _buildStartButton() {
+  Widget _buildStatusTile(String label, IconData icon, Color color) {
+    final isSelected = _status == label;
     return InkWell(
-      onTap: _startTracking,
-      borderRadius: BorderRadius.circular(20),
-      child: Container(
-        height: 80,
-        decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            colors: [Color(0xFF4CAF50), Color(0xFF66BB6A)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.green.withOpacity(0.4),
-              blurRadius: 12,
-              offset: const Offset(0, 6),
-            ),
-          ],
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: const [
-            Icon(Icons.play_arrow, color: Colors.white, size: 40),
-            SizedBox(width: 12),
-            Text(
-              'Start Tracking',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+      onTap: () async {
+        setState(() {
+          _status = label;
+        });
 
-  // Large Stop Button
-  Widget _buildStopButton() {
-    return InkWell(
-      onTap: _stopTracking,
-      borderRadius: BorderRadius.circular(20),
-      child: Container(
-        height: 80,
-        decoration: BoxDecoration(
-          gradient: const LinearGradient(
-            colors: [Color(0xFFF44336), Color(0xFFE57373)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.red.withOpacity(0.4),
-              blurRadius: 12,
-              offset: const Offset(0, 6),
-            ),
-          ],
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: const [
-            Icon(Icons.stop, color: Colors.white, size: 40),
-            SizedBox(width: 12),
-            Text(
-              'Stop Tracking',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+        // Immediately push a status update if trip is active and we know where we are
+        if (_isTripActive &&
+            _lastPosition != null &&
+            _busCode != null &&
+            _routeCode != null) {
+          await _mqttService.publishBusLocation(
+            routeId: _routeCode!, // e.g. "801"
+            busId: _busCode!, // e.g. "801-B"
+            lat: _lastPosition!.latitude,
+            lng: _lastPosition!.longitude,
+            status: _status, // <- the new status
+          );
+        }
+      },
 
-  // Status Update Section
-  Widget _buildStatusUpdateSection() {
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Bus Status',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Colors.grey.shade800,
-              ),
-            ),
-            const SizedBox(height: 16),
-            GridView.count(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              crossAxisCount: 2,
-              mainAxisSpacing: 12,
-              crossAxisSpacing: 12,
-              childAspectRatio: 1.5,
-              children: [
-                _buildStatusButton(
-                  label: 'In Service',
-                  color: Colors.green,
-                  icon: Icons.check_circle,
-                  statusValue: 'In Service',
-                ),
-                _buildStatusButton(
-                  label: 'Delayed',
-                  color: Colors.orange,
-                  icon: Icons.access_time,
-                  statusValue: 'Delayed',
-                ),
-                _buildStatusButton(
-                  label: 'Full Capacity',
-                  color: Colors.blue,
-                  icon: Icons.people,
-                  statusValue: 'Full Capacity',
-                ),
-                _buildStatusButton(
-                  label: 'Breakdown',
-                  color: Colors.red,
-                  icon: Icons.warning,
-                  statusValue: 'Breakdown',
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildStatusButton({
-    required String label,
-    required Color color,
-    required IconData icon,
-    required String statusValue,
-  }) {
-    final isSelected = _currentStatus == statusValue;
-
-    return InkWell(
-      onTap: () => _updateStatus(statusValue),
-      borderRadius: BorderRadius.circular(12),
       child: Container(
         decoration: BoxDecoration(
-          color: isSelected ? color.withOpacity(0.2) : Colors.grey.shade100,
-          borderRadius: BorderRadius.circular(12),
+          color: isSelected ? color.withOpacity(0.1) : Colors.transparent,
           border: Border.all(
             color: isSelected ? color : Colors.grey.shade300,
             width: isSelected ? 3 : 1,
           ),
+          borderRadius: BorderRadius.circular(12),
         ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              icon,
-              color: isSelected ? color : Colors.grey.shade600,
-              size: 32,
-            ),
+            Icon(icon, size: 40, color: color),
             const SizedBox(height: 8),
             Text(
               label,
-              textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 14,
-                fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-                color: isSelected ? color : Colors.grey.shade700,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                color: color,
               ),
+              textAlign: TextAlign.center,
             ),
           ],
         ),
@@ -600,84 +245,116 @@ class _DriverPageState extends State<DriverPage> {
     );
   }
 
-  Future<void> _updateStatus(String newStatus) async {
-    setState(() {
-      _currentStatus = newStatus;
-    });
-
-    // If tracking is active, publish immediate update with new status
-    if (_isTracking && _lastPosition != null) {
-      await _mqttService.publishLocation(
-        routeId: _assignedRouteId,
-        busId: _assignedBusId,
-        lat: _lastPosition!.latitude,
-        lng: _lastPosition!.longitude,
-        status: _currentStatus,
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoadingAssignment) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Driver Tracking')),
+        body: const Center(child: CircularProgressIndicator()),
       );
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Status updated to: $_currentStatus'),
-            duration: const Duration(seconds: 2),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
     }
-  }
 
-  // Debug Info (always visible)
-  Widget _buildDebugInfo(Position pos) {
-    return Container(
-      padding: const EdgeInsets.all(20.0),
-      decoration: BoxDecoration(
-        color: Colors.grey[200],
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Developer Debug Info',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: Colors.black87,
+    return Scaffold(
+      appBar: AppBar(title: const Text('Driver Tracking')),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            // Bus assignment card
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.directions_bus),
+                title: Text('Bus: ${_busCode ?? '-'}'),
+                subtitle: Text(
+                  _busPlate != null ? 'Plate: $_busPlate' : 'Not assigned',
+                ),
+              ),
             ),
-          ),
-          const SizedBox(height: 16),
-          _buildDebugRow('Latitude', pos.latitude.toString()),
-          const SizedBox(height: 8),
-          _buildDebugRow('Longitude', pos.longitude.toString()),
-          const SizedBox(height: 8),
-          _buildDebugRow('Accuracy', '${pos.accuracy.toStringAsFixed(2)} m'),
-        ],
-      ),
-    );
-  }
 
-  Widget _buildDebugRow(String label, String value) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: Colors.black87,
-          ),
+            const SizedBox(height: 8),
+
+            // Route assignment card
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.route),
+                title: Text('Route: ${_routeCode ?? '-'}'),
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            // Status selector grid
+            GridView.count(
+              crossAxisCount: 2,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              mainAxisSpacing: 12,
+              crossAxisSpacing: 12,
+              childAspectRatio: 1.2,
+              children: [
+                _buildStatusTile(
+                  'In Service',
+                  Icons.check_circle,
+                  Colors.green,
+                ),
+                _buildStatusTile('Delayed', Icons.access_time, Colors.orange),
+                _buildStatusTile('Breakdown', Icons.warning, Colors.red),
+                _buildStatusTile('Full Capacity', Icons.people, Colors.blue),
+              ],
+            ),
+
+            const SizedBox(height: 16),
+
+            // Last GPS info
+            if (_lastPosition != null)
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.gps_fixed),
+                  title: const Text('Last position'),
+                  subtitle: Text(
+                    'Lat: ${_lastPosition!.latitude.toStringAsFixed(6)}, '
+                    'Lng: ${_lastPosition!.longitude.toStringAsFixed(6)}',
+                  ),
+                ),
+              )
+            else
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.gps_not_fixed),
+                  title: const Text('No GPS data yet'),
+                  subtitle: const Text(
+                    'Tap "Start Trip" to begin sending location.',
+                  ),
+                ),
+              ),
+
+            const Spacer(),
+
+            // Start / Stop button
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                icon: Icon(
+                  _isTripActive
+                      ? Icons.stop_circle_outlined
+                      : Icons.play_circle_fill,
+                ),
+                label: Text(_isTripActive ? 'Stop Trip' : 'Start Trip'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 32,
+                    vertical: 16,
+                  ),
+                  backgroundColor: _isTripActive ? Colors.red : Colors.green,
+                ),
+                onPressed: (_busCode == null || _routeCode == null)
+                    ? null
+                    : _toggleTrip,
+              ),
+            ),
+          ],
         ),
-        Text(
-          value,
-          style: TextStyle(
-            fontSize: 13,
-            color: Colors.grey.shade700,
-            fontFamily: 'monospace',
-          ),
-        ),
-      ],
+      ),
     );
   }
 }

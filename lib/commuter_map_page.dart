@@ -29,13 +29,17 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
   GoogleMapController? _mapController;
   final LatLng _initialCameraPos = const LatLng(3.1390, 101.6869); // KL
 
-  // routeId -> busId -> position
+  // routeCode -> busCode -> position
+  // Keys are route codes (e.g. "750") and bus codes (e.g. "750-A"), not numeric IDs
   final Map<String, Map<String, LatLng>> _routeBusPositions = {};
   final Map<String, Map<String, DateTime>> _routeLastUpdates = {};
-  final Map<String, Map<String, String>> _routeBusStatus = {}; // routeId -> busId -> status
+  final Map<String, Map<String, String>> _routeBusStatus = {}; // routeCode -> busCode -> status
 
-  late String _selectedRouteId;
-  String? _focusedBusId;
+  late String _selectedRouteCode; // Route code (e.g. "750"), not numeric ID
+  String? _focusedBusId; // Bus code (e.g. "750-A"), not numeric ID
+
+  // Lookup map from bus code -> bus model (for displaying bus details like plateNo)
+  late final Map<String, BusInfo> _busLookup;
 
   // Current route polyline points from Directions API
   List<LatLng> _currentPolylinePoints = [];
@@ -53,8 +57,23 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
   @override
   void initState() {
     super.initState();
-    // Initialize selected route from widget parameter or default to route_01
-    _selectedRouteId = widget.initialRouteId ?? 'route_01';
+    // Initialize bus lookup map
+    _busLookup = {};
+    
+    // Initialize selected route code from widget parameters
+    if (widget.tripSelection != null) {
+      _selectedRouteCode = widget.tripSelection!.route.code.toString();
+      // Set focused bus from trip selection
+      _focusedBusId = widget.tripSelection!.bus.code;
+      // Add the tripSelection bus to lookup map
+      _busLookup[widget.tripSelection!.bus.code] = widget.tripSelection!.bus;
+    } else if (widget.initialRouteId != null) {
+      // Treat initialRouteId as route code (string)
+      _selectedRouteCode = widget.initialRouteId!;
+    } else {
+      // Fallback to first route's code
+      _selectedRouteCode = allRoutes.first.code;
+    }
     
     // Load custom bus icon
     _loadBusIcon();
@@ -72,7 +91,7 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
           // This forces a rebuild to check timestamps
           // Clean up focused bus if it's stale
           if (_focusedBusId != null) {
-            final lastUpdate = _routeLastUpdates[_selectedRouteId]?[_focusedBusId];
+            final lastUpdate = _routeLastUpdates[_selectedRouteCode]?[_focusedBusId];
             if (lastUpdate != null) {
               final staleness = DateTime.now().difference(lastUpdate).inSeconds;
               if (staleness > 60) {
@@ -181,15 +200,16 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
       print('📍 Destination: $destination');
     } else {
       // Legacy behavior: use hardcoded route model
+      // Match by route code instead of numeric ID
       final routeModel = allRoutes.firstWhere(
-        (route) => route.id == _selectedRouteId,
+        (route) => route.code == _selectedRouteCode,
         orElse: () => allRoutes.first,
       );
       
       origin = routeModel.originCoords;
       destination = routeModel.destinationCoords;
       
-      print('📍 Using legacy route model: ${routeModel.label} - ${routeModel.name}');
+      print('📍 Using legacy route model: ${routeModel.code} - ${routeModel.name}');
       print('📍 Origin: $origin');
       print('📍 Destination: $destination');
     }
@@ -277,39 +297,39 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     try {
       await _mqttService.connect();
 
-      // TODO: Subscribe to MQTT topic for specific bus when tripSelection is available
-      // If widget.tripSelection != null, subscribe to:
-      //   rapidkl/bus/${widget.tripSelection!.bus.id}/location
-      // or:
-      //   rapidkl/bus/${widget.tripSelection!.bus.code}/location
-      // For now, subscribing to all routes as fallback
+      // Subscribe to all bus location topics
+      // Topic pattern: rapidkl/bus/+/location (where + matches any bus code)
+      // We filter buses by route code in the listener
       await _mqttService.subscribeToAllRoutes();
 
       _sub = _mqttService.busLocationStream.listen((location) {
+        // Debug logging for incoming MQTT updates
+        debugPrint(
+          '🚌 MQTT UPDATE route=${location.routeId}, '
+          'bus=${location.busId}, '
+          'lat=${location.lat}, lng=${location.lng}, '
+          'status=${location.status}, '
+          'ts=${location.timestamp.toIso8601String()}',
+        );
+
+        // routeId and busId are already strings (route code and bus code)
         final routeId = location.routeId;
         final busId = location.busId;
         final pos = LatLng(location.lat, location.lng);
-        final status = location.status; // Capture status
-
-        print('🚌 COMMUTER: Received update for $busId on $routeId - Status: $status');
+        final status = location.status;
 
         setState(() {
           _routeBusPositions.putIfAbsent(routeId, () => {});
           _routeLastUpdates.putIfAbsent(routeId, () => {});
-          _routeBusStatus.putIfAbsent(routeId, () => {}); // Initialize status map
+          _routeBusStatus.putIfAbsent(routeId, () => {});
 
           _routeBusPositions[routeId]![busId] = pos;
           _routeLastUpdates[routeId]![busId] = location.timestamp;
-          _routeBusStatus[routeId]![busId] = status; // Save status
-
-          print('🚌 COMMUTER: Saved status for $busId: ${_routeBusStatus[routeId]![busId]}');
-
-          // Fix: Auto-select first bus
-          if (_focusedBusId == null) _focusedBusId = busId;
+          _routeBusStatus[routeId]![busId] = status;
         });
 
         // Auto-follow if this bus is on the selected route & focused
-        if (_selectedRouteId == routeId && _focusedBusId == busId) {
+        if (_selectedRouteCode == routeId && _focusedBusId == busId) {
           _mapController?.animateCamera(CameraUpdate.newLatLng(pos));
         }
       });
@@ -328,7 +348,7 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
   void _recenterOnFocusedBus() {
     if (_focusedBusId == null || _mapController == null) return;
 
-    final busesOnRoute = _routeBusPositions[_selectedRouteId];
+    final busesOnRoute = _routeBusPositions[_selectedRouteCode];
     if (busesOnRoute == null) return;
 
     final pos = busesOnRoute[_focusedBusId!];
@@ -394,11 +414,12 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
       routeFare = 'RM ${widget.tripSelection!.route.baseFare.toStringAsFixed(2)}';
     } else {
       // Legacy: Use hardcoded route model
+      // Match by route code instead of numeric ID
       final currentRoute = allRoutes.firstWhere(
-        (route) => route.id == _selectedRouteId,
+        (route) => route.code == _selectedRouteCode,
         orElse: () => allRoutes.first,
       );
-      routeLabel = currentRoute.label;
+      routeLabel = currentRoute.code; // Use code as the route label
       routeName = currentRoute.name;
       routeOrigin = currentRoute.origin;
       routeDestination = currentRoute.destination;
@@ -409,63 +430,62 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     }
 
     final busesOnRoute =
-        _routeBusPositions[_selectedRouteId] ?? <String, LatLng>{};
+        _routeBusPositions[_selectedRouteCode] ?? <String, LatLng>{};
 
-    // Build markers only for the selected route with staleness check
+    // Derive the "current bus" from focusedBusId
+    final currentBusCode =
+        _focusedBusId ?? widget.tripSelection?.bus.code;
+    final currentBus =
+        currentBusCode != null ? _busLookup[currentBusCode] : null;
+
+    // Build markers for ALL buses on the selected route
     final markers = busesOnRoute.entries.where((entry) {
       final busId = entry.key;
-      final lastUpdate = _routeLastUpdates[_selectedRouteId]?[busId];
-      
-      // Filter out ghost buses (>60 seconds stale)
+      final lastUpdate = _routeLastUpdates[_selectedRouteCode]?[busId];
+
       if (lastUpdate != null) {
         final staleness = DateTime.now().difference(lastUpdate).inSeconds;
-        if (staleness > 60) {
-          return false; // Skip this bus marker
-        }
+        // Hide only ghost buses that haven't updated for a long time
+        if (staleness > 300) return false; // 5 minutes is fine
       }
+
       return true;
     }).map((entry) {
       final busId = entry.key;
       final pos = entry.value;
-      final lastUpdate = _routeLastUpdates[_selectedRouteId]?[busId];
-      
-      // Check staleness for signal warning
+      final lastUpdate = _routeLastUpdates[_selectedRouteCode]?[busId];
+      final status = _routeBusStatus[_selectedRouteCode]?[busId] ?? 'In Service';
+
       int staleness = 0;
       if (lastUpdate != null) {
         staleness = DateTime.now().difference(lastUpdate).inSeconds;
       }
-      
-      // Read the status for this bus
-      final status = _routeBusStatus[_selectedRouteId]?[busId] ?? 'In Service';
-      
-      // Determine display status text and appropriate colored icon
+
+      // Status priority: Breakdown > Delayed > Full Capacity > Signal Weak (only if staleness > 120 and status is "In Service") > Normal In Service
       String displayStatus;
       BitmapDescriptor markerIcon;
-      
-      if (staleness > 30) {
-        // 🟡 Weak signal - use yellow bus icon (prioritized over status)
-        displayStatus = 'Signal Weak';
-        markerIcon = _busIconYellow ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueYellow);
-      } else if (status == 'Breakdown') {
-        // 🔴 Breakdown - use red bus icon
+
+      if (status == 'Breakdown') {
         displayStatus = 'Breakdown';
         markerIcon = _busIconRed ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed);
       } else if (status == 'Delayed') {
-        // 🟠 Delayed - use orange bus icon
         displayStatus = 'Delayed';
         markerIcon = _busIconOrange ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange);
       } else if (status == 'Full Capacity') {
-        // 🔵 Full capacity - use blue bus icon
         displayStatus = 'Full Capacity';
         markerIcon = _busIconBlue ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure);
+      } else if (staleness > 120) {
+        // Only show Signal Weak when there's no special status AND the last update is old (2+ minutes)
+        displayStatus = 'Signal Weak';
+        markerIcon = _busIconYellow ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueYellow);
       } else {
-        // 🟢 In Service (normal) - use green bus icon
+        // Normal "In Service"
         displayStatus = status;
         markerIcon = _busIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen);
       }
 
       return Marker(
-        markerId: MarkerId('bus_${_selectedRouteId}_$busId'),
+        markerId: MarkerId('bus_${_selectedRouteCode}_$busId'),
         position: pos,
         icon: markerIcon,
         infoWindow: InfoWindow(
@@ -479,6 +499,12 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
         },
       );
     }).toSet();
+
+    // Extra debug info
+    debugPrint(
+      '🗺️ Markers on route $_selectedRouteCode: ${markers.length} '
+      '(busesOnRoute: ${busesOnRoute.keys.toList()})',
+    );
 
     // Add From and To stop markers with distinct colors
     if (_currentPolylinePoints.isNotEmpty) {
@@ -516,15 +542,15 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
       print('🗺️ NO MARKERS - _currentPolylinePoints is empty, skipping origin/destination markers');
     }
 
-    final focusedBusId = _focusedBusId;
-    final focusedPos = focusedBusId != null ? busesOnRoute[focusedBusId] : null;
-    final focusedLastUpdate = (focusedBusId != null)
-        ? (_routeLastUpdates[_selectedRouteId]?[focusedBusId])
+    final focusedBusCode = _focusedBusId; // Bus code (e.g. "750-A")
+    final focusedPos = focusedBusCode != null ? busesOnRoute[focusedBusCode] : null;
+    final focusedLastUpdate = (focusedBusCode != null)
+        ? (_routeLastUpdates[_selectedRouteCode]?[focusedBusCode])
         : null;
     
     // Get the status of the focused bus
-    final focusedStatus = (focusedBusId != null)
-        ? (_routeBusStatus[_selectedRouteId]?[focusedBusId] ?? 'In Service')
+    final focusedStatus = (focusedBusCode != null)
+        ? (_routeBusStatus[_selectedRouteCode]?[focusedBusCode] ?? 'In Service')
         : 'In Service';
     
     // Determine badge color, text, and icon based on status
@@ -566,7 +592,7 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
       
       polylines.add(
         Polyline(
-          polylineId: PolylineId('${_selectedRouteId}_path'),
+          polylineId: PolylineId('${_selectedRouteCode}_path'),
           points: _currentPolylinePoints,
           color: Colors.blue, // Changed from teal to blue
           width: 5,
@@ -817,18 +843,18 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
                             ),
                           ],
                         ),
-                      // Selected bus info (if using trip selection)
-                      if (widget.tripSelection != null)
+                      // Selected bus info (if current bus is available)
+                      if (currentBus != null)
                         Row(
                           children: [
-                            Icon(
+                            const Icon(
                               Icons.directions_bus,
                               size: 16,
-                              color: Colors.grey[600],
+                              color: Colors.grey,
                             ),
                             const SizedBox(width: 6),
                             Text(
-                              'Bus ${widget.tripSelection!.bus.code} (${widget.tripSelection!.bus.plateNo})',
+                              'Bus ${currentBus.code} (${currentBus.plateNo})',
                               style: TextStyle(
                                 fontSize: 13,
                                 color: Colors.grey[600],
@@ -845,14 +871,14 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
                   const SizedBox(height: 14),
                   
                   // Live Bus Data (Conditional)
-                  if (focusedBusId != null) ...[
+                  if (focusedBusCode != null) ...[
                     // Bus header with status badge
                     Row(
                       children: [
                         const Icon(Icons.directions_bus, size: 20),
                         const SizedBox(width: 8),
                         Text(
-                          'Bus $focusedBusId',
+                          'Bus $focusedBusCode', // Display bus code (e.g. "750-A")
                           style: const TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,

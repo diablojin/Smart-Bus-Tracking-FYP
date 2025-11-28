@@ -1,25 +1,27 @@
 import 'package:google_maps_flutter/google_maps_flutter.dart'; // Add this
 
 class BusRouteModel {
-  final String id;
-  final String label;
+  final String id; // Legacy identifier (e.g. 'route_01'), kept for backward compatibility
+  final String code; // Route code used in MQTT and UI (e.g. "750", "801")
+  final String label; // Deprecated: use 'code' instead. Kept for backward compatibility.
   final String name;
   final String origin;
   final String destination;
-  final LatLng originCoords;      // <--- ADD THIS
-  final LatLng destinationCoords; // <--- ADD THIS
+  final LatLng originCoords;
+  final LatLng destinationCoords;
   final String fare;
   final String operatingHours;
   final List<String> stops;
 
   const BusRouteModel({
     required this.id,
-    required this.label,
+    required this.code, // Route code (e.g. "750") - single source of truth
+    required this.label, // Deprecated: kept for backward compatibility
     required this.name,
     required this.origin,
     required this.destination,
-    required this.originCoords,      // <--- Add to constructor
-    required this.destinationCoords, // <--- Add to constructor
+    required this.originCoords,
+    required this.destinationCoords,
     required this.fare,
     required this.operatingHours,
     required this.stops,
@@ -29,7 +31,8 @@ class BusRouteModel {
 final List<BusRouteModel> allRoutes = [
   BusRouteModel(
     id: 'route_01',
-    label: '750',
+    code: '750', // Route code used in MQTT and UI
+    label: '750', // Deprecated: kept for backward compatibility
     name: 'Route 750 (Shah Alam - Pasar Seni)',
     origin: 'UiTM Shah Alam',
     destination: 'Hub Pasar Seni',
@@ -42,7 +45,8 @@ final List<BusRouteModel> allRoutes = [
   ),
   BusRouteModel(
     id: 'route_02',
-    label: 'GOKL-01',
+    code: 'GOKL-01', // Route code used in MQTT and UI
+    label: 'GOKL-01', // Deprecated: kept for backward compatibility
     name: 'GOKL Green Line',
     origin: 'KLCC',
     destination: 'Bukit Bintang',
