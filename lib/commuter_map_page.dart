@@ -10,6 +10,7 @@ import 'route_data_model.dart';
 import 'services/directions_service.dart';
 import 'services/route_search_service.dart';
 import 'keys/directions_api_key.dart';
+import 'config/supabase_client.dart';
 
 class CommuterMapPage extends StatefulWidget {
   final String? initialRouteId; // Optional: Pre-select a specific route (legacy)
@@ -36,7 +37,7 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
   final Map<String, Map<String, String>> _routeBusStatus = {}; // routeCode -> busCode -> status
 
   late String _selectedRouteCode; // Route code (e.g. "750"), not numeric ID
-  String? _focusedBusId; // Bus code (e.g. "750-A"), not numeric ID
+  BusInfo? _selectedBus; // Selected bus for tracking (dynamic, not locked to initial)
 
   // Lookup map from bus code -> bus model (for displaying bus details like plateNo)
   late final Map<String, BusInfo> _busLookup;
@@ -63,16 +64,18 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     // Initialize selected route code from widget parameters
     if (widget.tripSelection != null) {
       _selectedRouteCode = widget.tripSelection!.route.code.toString();
-      // Set focused bus from trip selection
-      _focusedBusId = widget.tripSelection!.bus.code;
+      // Set initial selected bus from trip selection (but allow it to change)
+      _selectedBus = widget.tripSelection!.bus;
       // Add the tripSelection bus to lookup map
       _busLookup[widget.tripSelection!.bus.code] = widget.tripSelection!.bus;
     } else if (widget.initialRouteId != null) {
       // Treat initialRouteId as route code (string)
       _selectedRouteCode = widget.initialRouteId!;
+      _selectedBus = null; // No initial bus selection
     } else {
       // Fallback to first route's code
       _selectedRouteCode = allRoutes.first.code;
+      _selectedBus = null; // No initial bus selection
     }
     
     // Load custom bus icon
@@ -84,19 +87,23 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     // Initialize MQTT connection
     _initMqtt();
     
+    // Pre-fetch all buses for the selected route to populate lookup
+    _prefetchBusesForRoute();
+    
     // Start periodic timer to refresh UI and check for stale buses
     _cleanupTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
       if (mounted) {
         setState(() {
           // This forces a rebuild to check timestamps
-          // Clean up focused bus if it's stale
-          if (_focusedBusId != null) {
-            final lastUpdate = _routeLastUpdates[_selectedRouteCode]?[_focusedBusId];
+          // Clean up selected bus if it's stale (but don't force reset - let user choose)
+          if (_selectedBus != null) {
+            final busCode = _selectedBus!.code;
+            final lastUpdate = _routeLastUpdates[_selectedRouteCode]?[busCode];
             if (lastUpdate != null) {
               final staleness = DateTime.now().difference(lastUpdate).inSeconds;
-              if (staleness > 60) {
-                // Ghost bus detected, reset focus
-                _focusedBusId = null;
+              if (staleness > 300) {
+                // Very stale bus (5+ minutes), but don't auto-reset - let user see it's stale
+                // The UI will show "Signal Weak" or similar status
               }
             }
           }
@@ -328,9 +335,33 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
           _routeBusStatus[routeId]![busId] = status;
         });
 
-        // Auto-follow if this bus is on the selected route & focused
-        if (_selectedRouteCode == routeId && _focusedBusId == busId) {
+        // Auto-follow if this bus is on the selected route & selected
+        if (_selectedRouteCode == routeId && _selectedBus?.code == busId) {
           _mapController?.animateCamera(CameraUpdate.newLatLng(pos));
+        }
+        
+        // Update bus lookup when we receive MQTT updates
+        // Create a basic entry if we don't have full bus info yet
+        if (!_busLookup.containsKey(busId)) {
+          // Create a temporary bus info entry for buses that appear via MQTT
+          // This allows users to select buses even if they weren't in the initial trip selection
+          final tempBus = BusInfo(
+            id: 0, // Temporary - will be updated if real data arrives
+            routeId: 0, // Temporary
+            plateNo: 'N/A',
+            code: busId,
+            isActive: true,
+          );
+          _busLookup[busId] = tempBus;
+          
+          // Fetch real bus data from Supabase in the background
+          _fetchBusInfoByCode(busId);
+        } else {
+          // Check if we have temporary data and fetch real data if needed
+          final existingBus = _busLookup[busId];
+          if (existingBus != null && (existingBus.plateNo == 'N/A' || existingBus.id == 0)) {
+            _fetchBusInfoByCode(busId);
+          }
         }
       });
     } catch (e) {
@@ -345,16 +376,137 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     super.dispose();
   }
 
-  void _recenterOnFocusedBus() {
-    if (_focusedBusId == null || _mapController == null) return;
+  void _onRecenterPressed() {
+    if (_selectedBus == null || _mapController == null) return;
 
     final busesOnRoute = _routeBusPositions[_selectedRouteCode];
     if (busesOnRoute == null) return;
 
-    final pos = busesOnRoute[_focusedBusId!];
+    final pos = busesOnRoute[_selectedBus!.code];
+    if (pos == null) return;
+
+    _mapController!.animateCamera(
+      CameraUpdate.newLatLngZoom(
+        pos,
+        15.0,
+      ),
+    );
+  }
+  
+  void _recenterOnSelectedBus() {
+    if (_selectedBus == null || _mapController == null) return;
+
+    final busesOnRoute = _routeBusPositions[_selectedRouteCode];
+    if (busesOnRoute == null) return;
+
+    final pos = busesOnRoute[_selectedBus!.code];
     if (pos == null) return;
 
     _mapController!.animateCamera(CameraUpdate.newLatLng(pos));
+  }
+  
+  void _moveCameraToBus(BusInfo bus) {
+    if (_mapController == null) return;
+    
+    final busesOnRoute = _routeBusPositions[_selectedRouteCode];
+    if (busesOnRoute == null) return;
+    
+    final pos = busesOnRoute[bus.code];
+    if (pos == null) return;
+    
+    _mapController!.animateCamera(CameraUpdate.newLatLng(pos));
+  }
+
+  /// Pre-fetch all buses for the selected route to populate lookup map
+  Future<void> _prefetchBusesForRoute() async {
+    try {
+      // First, get the route ID from the route code
+      final routeResponse = await supabase
+          .from('routes')
+          .select('id')
+          .eq('code', _selectedRouteCode)
+          .maybeSingle();
+
+      if (routeResponse == null) {
+        print('⚠️ Route with code $_selectedRouteCode not found');
+        return;
+      }
+
+      final routeId = routeResponse['id'] as int;
+
+      // Fetch all active buses for this route
+      final busesResponse = await supabase
+          .from('buses')
+          .select()
+          .eq('route_id', routeId)
+          .eq('is_active', true);
+
+      final buses = (busesResponse as List)
+          .map((json) => BusInfo.fromJson(json))
+          .toList();
+
+      // Update lookup map
+      setState(() {
+        for (final bus in buses) {
+          _busLookup[bus.code] = bus;
+        }
+        
+        // If we have a selected bus, make sure it's updated with real data
+        if (_selectedBus != null) {
+          final updatedBus = _busLookup[_selectedBus!.code];
+          if (updatedBus != null) {
+            _selectedBus = updatedBus;
+          }
+        }
+      });
+
+      print('✅ Pre-fetched ${buses.length} buses for route $_selectedRouteCode');
+    } catch (e) {
+      print('❌ Error pre-fetching buses for route: $e');
+      // Don't throw - allow the app to continue
+    }
+  }
+
+  /// Fetch bus information from Supabase by bus code
+  /// Updates the bus lookup map with real data
+  Future<void> _fetchBusInfoByCode(String busCode) async {
+    try {
+      // Skip if we already have this bus in lookup with real data (not temporary)
+      if (_busLookup.containsKey(busCode)) {
+        final existingBus = _busLookup[busCode];
+        if (existingBus != null && existingBus.plateNo != 'N/A' && existingBus.id != 0) {
+          return; // Already have real data
+        }
+      }
+
+      // Query Supabase for bus by code
+      final response = await supabase
+          .from('buses')
+          .select()
+          .eq('code', busCode)
+          .maybeSingle();
+
+      if (response != null) {
+        final busInfo = BusInfo.fromJson(response);
+        
+        // Update the lookup map
+        setState(() {
+          _busLookup[busCode] = busInfo;
+          
+          // If this is the currently selected bus, update it
+          if (_selectedBus?.code == busCode) {
+            _selectedBus = busInfo;
+          }
+        });
+        
+        print('✅ Fetched bus info for $busCode: ${busInfo.plateNo}');
+      } else {
+        print('⚠️ Bus with code $busCode not found in database');
+      }
+    } catch (e) {
+      print('❌ Error fetching bus info for $busCode: $e');
+      // Don't throw - allow the app to continue with temporary data
+    }
   }
 
   /// Calculate ETA from bus position to destination
@@ -384,6 +536,23 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     }
   }
 
+  /// Format last update timestamp for display
+  String _formatLastUpdate(DateTime lastUpdate) {
+    final now = DateTime.now();
+    final difference = now.difference(lastUpdate);
+    
+    if (difference.inSeconds < 60) {
+      return '${difference.inSeconds}s ago';
+    } else if (difference.inMinutes < 60) {
+      return '${difference.inMinutes}m ago';
+    } else if (difference.inHours < 24) {
+      return '${difference.inHours}h ago';
+    } else {
+      // Format as date and time
+      return '${lastUpdate.day}/${lastUpdate.month} ${lastUpdate.hour}:${lastUpdate.minute.toString().padLeft(2, '0')}';
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -394,8 +563,7 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     String routeDestination;
     LatLng routeOriginCoords;
     LatLng routeDestinationCoords;
-    String routeFare;
-    String routeOperatingHours = '6:00 AM - 11:00 PM'; // Default
+    String? routeFare;
     
     if (widget.tripSelection != null) {
       // Use trip selection data
@@ -426,17 +594,10 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
       routeOriginCoords = currentRoute.originCoords;
       routeDestinationCoords = currentRoute.destinationCoords;
       routeFare = currentRoute.fare;
-      routeOperatingHours = currentRoute.operatingHours;
     }
 
     final busesOnRoute =
         _routeBusPositions[_selectedRouteCode] ?? <String, LatLng>{};
-
-    // Derive the "current bus" from focusedBusId
-    final currentBusCode =
-        _focusedBusId ?? widget.tripSelection?.bus.code;
-    final currentBus =
-        currentBusCode != null ? _busLookup[currentBusCode] : null;
 
     // Build markers for ALL buses on the selected route
     final markers = busesOnRoute.entries.where((entry) {
@@ -493,9 +654,34 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
           snippet: 'Status: $displayStatus',
         ),
         onTap: () {
+          // Find or create bus info for this bus
+          BusInfo? busInfo = _busLookup[busId];
+          if (busInfo == null) {
+            // Create a basic bus info entry if we don't have it
+            // This can happen if bus appears via MQTT before being in lookup
+            // We'll use the bus code as a temporary identifier
+            busInfo = BusInfo(
+              id: 0, // Temporary - will be updated when real data arrives
+              routeId: 0, // Temporary
+              plateNo: 'N/A',
+              code: busId,
+              isActive: true,
+            );
+            _busLookup[busId] = busInfo;
+            
+            // Fetch real bus data from Supabase in the background
+            _fetchBusInfoByCode(busId);
+          } else if (busInfo.plateNo == 'N/A' || busInfo.id == 0) {
+            // We have temporary data, fetch real data
+            _fetchBusInfoByCode(busId);
+          }
+          
           setState(() {
-            _focusedBusId = busId;
+            _selectedBus = busInfo;
           });
+          
+          // Move camera to selected bus
+          _moveCameraToBus(busInfo);
         },
       );
     }).toSet();
@@ -542,44 +728,17 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
       print('🗺️ NO MARKERS - _currentPolylinePoints is empty, skipping origin/destination markers');
     }
 
-    final focusedBusCode = _focusedBusId; // Bus code (e.g. "750-A")
-    final focusedPos = focusedBusCode != null ? busesOnRoute[focusedBusCode] : null;
-    final focusedLastUpdate = (focusedBusCode != null)
-        ? (_routeLastUpdates[_selectedRouteCode]?[focusedBusCode])
+    // Get data for selected bus
+    final selectedBusCode = _selectedBus?.code; // Bus code (e.g. "750-A")
+    final selectedPos = selectedBusCode != null ? busesOnRoute[selectedBusCode] : null;
+    final selectedLastUpdate = (selectedBusCode != null)
+        ? (_routeLastUpdates[_selectedRouteCode]?[selectedBusCode])
         : null;
     
-    // Get the status of the focused bus
-    final focusedStatus = (focusedBusCode != null)
-        ? (_routeBusStatus[_selectedRouteCode]?[focusedBusCode] ?? 'In Service')
+    // Get the status of the selected bus
+    final selectedStatus = (selectedBusCode != null)
+        ? (_routeBusStatus[_selectedRouteCode]?[selectedBusCode] ?? 'In Service')
         : 'In Service';
-    
-    // Determine badge color, text, and icon based on status
-    Color badgeColor;
-    String badgeText;
-    IconData badgeIcon;
-    
-    if (focusedStatus == 'Breakdown') {
-      badgeColor = Colors.red;
-      badgeText = 'Breakdown';
-      badgeIcon = Icons.warning;
-    } else if (focusedStatus == 'Delayed') {
-      badgeColor = Colors.orange;
-      badgeText = 'Delayed';
-      badgeIcon = Icons.access_time;
-    } else if (focusedStatus == 'Full Capacity') {
-      badgeColor = Colors.blue;
-      badgeText = 'Full Capacity';
-      badgeIcon = Icons.people;
-    } else if (focusedStatus == 'Signal Weak') {
-      badgeColor = Colors.yellow.shade700;
-      badgeText = 'Signal Weak';
-      badgeIcon = Icons.signal_wifi_statusbar_connected_no_internet_4;
-    } else {
-      // 'In Service' or default
-      badgeColor = Colors.green;
-      badgeText = focusedStatus;
-      badgeIcon = Icons.check_circle;
-    }
 
     final activeBusIds = busesOnRoute.keys.toList();
 
@@ -606,476 +765,413 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     }
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Commuter View')),
+      appBar: AppBar(
+        title: const Text('Commuter View'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            Navigator.of(context).pop();
+          },
+        ),
+      ),
       body: Stack(
         children: [
-          GoogleMap(
-            initialCameraPosition: CameraPosition(
-              target: _initialCameraPos,
-              zoom: 14,
-            ),
-            markers: markers,
-            polylines: polylines,
-            onMapCreated: (controller) {
-              _mapController = controller;
-            },
-          ),
-
-          // Top Route Header Card
-          Positioned(
-            top: 12,
-            left: 12,
-            right: 12,
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.15),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
+          // 1) Map fills the screen
+          Positioned.fill(
+            child: GoogleMap(
+              initialCameraPosition: CameraPosition(
+                target: _initialCameraPos,
+                zoom: 14,
               ),
-              child: Row(
-                children: [
-                  // Route Label Badge
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).primaryColor,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      routeLabel,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  // Route Name and Direction
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          routeName,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 4),
-                        
-                        // Show specific trip direction if tripSelection is available
-                        if (widget.tripSelection != null) ...[
-                          Row(
-                            children: [
-                              Icon(
-                                Icons.circle,
-                                size: 8,
-                                color: Colors.blue.shade600,
-                              ),
-                              const SizedBox(width: 6),
-                              Flexible(
-                                child: Text(
-                                  widget.tripSelection!.fromStop.name,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.blue.shade700,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 6),
-                                child: Icon(
-                                  Icons.arrow_forward,
-                                  size: 14,
-                                  color: Colors.grey[700],
-                                ),
-                              ),
-                              Flexible(
-                                child: Text(
-                                  widget.tripSelection!.toStop.name,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.red.shade700,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              Icon(
-                                Icons.circle,
-                                size: 8,
-                                color: Colors.red.shade600,
-                              ),
-                            ],
-                          ),
-                        ] else ...[
-                          // Legacy: Show generic origin → destination
-                          Row(
-                            children: [
-                              Flexible(
-                                child: Text(
-                                  routeOrigin,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey[600],
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 4),
-                                child: Icon(
-                                  Icons.arrow_forward,
-                                  size: 12,
-                                  color: Colors.grey[600],
-                                ),
-                              ),
-                              Flexible(
-                                child: Text(
-                                  routeDestination,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey[600],
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+              markers: markers,
+              polylines: polylines,
+              onMapCreated: (controller) {
+                _mapController = controller;
+              },
             ),
           ),
 
-          // Bottom Info Sheet
+          // 2) Top route summary card
           Positioned(
-            left: 8,
-            right: 8,
-            bottom: 8,
-            child: Container(
-              padding: const EdgeInsets.all(18),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.2),
-                    blurRadius: 12,
-                    offset: const Offset(0, -2),
-                  ),
-                ],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Static Route Data (Always visible)
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      // Fare
-                      Row(
-                        children: [
-                          Icon(
-                            routeFare.toLowerCase() == 'free'
-                                ? Icons.star
-                                : Icons.payment,
-                            size: 18,
-                            color: routeFare.toLowerCase() == 'free'
-                                ? Colors.green
-                                : Theme.of(context).primaryColor,
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            routeFare,
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                              color: routeFare.toLowerCase() == 'free'
-                                  ? Colors.green
-                                  : Theme.of(context).primaryColor,
-                            ),
-                          ),
-                        ],
-                      ),
-                      // Operating Hours (if not using trip selection)
-                      if (widget.tripSelection == null)
-                        Row(
-                          children: [
-                            Icon(
-                              Icons.access_time,
-                              size: 16,
-                              color: Colors.grey[600],
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              routeOperatingHours,
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.grey[600],
-                              ),
-                            ),
-                          ],
-                        ),
-                      // Selected bus info (if current bus is available)
-                      if (currentBus != null)
-                        Row(
-                          children: [
-                            const Icon(
-                              Icons.directions_bus,
-                              size: 16,
-                              color: Colors.grey,
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              'Bus ${currentBus.code} (${currentBus.plateNo})',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.grey[600],
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 14),
-                  
-                  const Divider(height: 1),
-                  const SizedBox(height: 14),
-                  
-                  // Live Bus Data (Conditional)
-                  if (focusedBusCode != null) ...[
-                    // Bus header with status badge
-                    Row(
-                      children: [
-                        const Icon(Icons.directions_bus, size: 20),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Bus $focusedBusCode', // Display bus code (e.g. "750-A")
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const Spacer(),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: badgeColor,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                badgeIcon,
-                                size: 12,
-                                color: Colors.white,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                badgeText,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    
-                    // ETA and Active buses (Status-aware styling)
-                    Row(
-                      children: [
-                        if (focusedPos != null && _destination != null) ...[
-                          // Determine ETA styling based on bus status
-                          Builder(
-                            builder: (context) {
-                              Color etaBgColor;
-                              Color etaBorderColor;
-                              Color etaTextColor;
-                              IconData etaIcon;
-                              String etaText;
-                              
-                              if (focusedStatus == 'Breakdown') {
-                                // 🔴 Breakdown - Show unavailable with red/grey styling
-                                etaBgColor = Colors.red.shade50;
-                                etaBorderColor = Colors.red.shade300;
-                                etaTextColor = Colors.red.shade700;
-                                etaIcon = Icons.warning;
-                                etaText = 'ETA: Unavailable';
-                              } else if (focusedStatus == 'Delayed') {
-                                // 🟠 Delayed - Show ETA with orange styling
-                                etaBgColor = Colors.orange.shade50;
-                                etaBorderColor = Colors.orange.shade300;
-                                etaTextColor = Colors.orange.shade700;
-                                etaIcon = Icons.access_time;
-                                etaText = 'ETA: ${_calculateETA(focusedPos)}';
-                              } else if (focusedStatus == 'Full Capacity') {
-                                // 🔵 Full Capacity - Show ETA with blue styling
-                                etaBgColor = Colors.blue.shade50;
-                                etaBorderColor = Colors.blue.shade300;
-                                etaTextColor = Colors.blue.shade700;
-                                etaIcon = Icons.access_time;
-                                etaText = 'ETA: ${_calculateETA(focusedPos)}';
-                              } else {
-                                // 🟢 Normal/In Service - Show ETA with green styling
-                                etaBgColor = Colors.green.shade50;
-                                etaBorderColor = Colors.green.shade300;
-                                etaTextColor = Colors.green.shade700;
-                                etaIcon = Icons.access_time;
-                                etaText = 'ETA: ${_calculateETA(focusedPos)}';
-                              }
-                              
-                              return Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 6,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: etaBgColor,
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(
-                                    color: etaBorderColor,
-                                    width: 1.5,
-                                  ),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      etaIcon,
-                                      size: 14,
-                                      color: etaTextColor,
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      etaText,
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.bold,
-                                        color: etaTextColor,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
-                          ),
-                          const SizedBox(width: 10),
-                        ],
-                        Text(
-                          '${activeBusIds.length} bus(es) active',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (focusedLastUpdate != null) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        'Last update: $focusedLastUpdate',
-                        style: TextStyle(fontSize: 11, color: Colors.grey[500]),
-                      ),
-                    ],
-                  ] else ...[
-                    // No bus tracking - show waiting message
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.orange.shade50,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: Colors.orange.shade200,
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.info_outline,
-                            size: 20,
-                            color: Colors.orange.shade700,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              'Waiting for bus departure...',
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: Colors.orange.shade900,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ],
-              ),
+            top: kToolbarHeight + 12, // below AppBar
+            left: 16,
+            right: 16,
+            child: _RouteSummaryCard(
+              routeCode: routeLabel,
+              routeName: routeName,
+              origin: routeOrigin,
+              destination: routeDestination,
             ),
           ),
 
-          // Debug button for testing Directions API
-          Positioned(
-            top: 100,
-            right: 12,
-            child: ElevatedButton(
-              onPressed: testDirectionsFromApp,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.deepPurple,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          // 3) Floating recenter button (bottom-right above bottom card)
+          if (selectedPos != null && _selectedBus != null)
+            Positioned(
+              right: 16,
+              bottom: 200, // adjust so it sits above bottom card
+              child: FloatingActionButton.small(
+                heroTag: 'recenter_fab',
+                onPressed: _onRecenterPressed,
+                child: const Icon(Icons.my_location),
               ),
-              child: const Text('Test Directions API'),
+            ),
+
+          // 4) Bottom card anchored to bottom
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: _AnimatedBusBottomCard(
+              selectedBus: _selectedBus,
+              activeBusCount: activeBusIds.length,
+              routeFare: routeFare,
+              selectedStatus: selectedStatus,
+              selectedLastUpdate: selectedLastUpdate,
+              etaText: selectedPos != null && _destination != null
+                  ? (selectedStatus == 'Breakdown'
+                      ? 'ETA: Unavailable'
+                      : 'ETA: ${_calculateETA(selectedPos)}')
+                  : null,
             ),
           ),
         ],
       ),
-      floatingActionButton: focusedPos != null
-          ? FloatingActionButton(
-              onPressed: _recenterOnFocusedBus,
-              tooltip: 'Recenter on bus',
-              child: const Icon(Icons.my_location),
-            )
-          : null,
-      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
+    );
+  }
+}
+
+// Route Summary Card Widget
+class _RouteSummaryCard extends StatelessWidget {
+  final String routeCode;
+  final String routeName;
+  final String origin;
+  final String destination;
+
+  const _RouteSummaryCard({
+    required this.routeCode,
+    required this.routeName,
+    required this.origin,
+    required this.destination,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF00695C),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              routeCode,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w700,
+                fontSize: 14,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  routeName,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    const Icon(Icons.circle, size: 8, color: Colors.blue),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        origin,
+                        style: const TextStyle(fontSize: 12),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    const Icon(Icons.arrow_forward, size: 14),
+                    const SizedBox(width: 8),
+                    const Icon(Icons.circle, size: 8, color: Colors.red),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        destination,
+                        style: const TextStyle(fontSize: 12),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Animated Bottom Card Widget
+class _AnimatedBusBottomCard extends StatelessWidget {
+  final BusInfo? selectedBus;
+  final int activeBusCount;
+  final String? routeFare;
+  final String? selectedStatus;
+  final DateTime? selectedLastUpdate;
+  final String? etaText;
+
+  const _AnimatedBusBottomCard({
+    required this.selectedBus,
+    required this.activeBusCount,
+    this.routeFare,
+    this.selectedStatus,
+    this.selectedLastUpdate,
+    this.etaText,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 250),
+      transitionBuilder: (child, animation) {
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 0.2),
+            end: Offset.zero,
+          ).animate(animation),
+          child: FadeTransition(opacity: animation, child: child),
+        );
+      },
+      child: selectedBus == null
+          ? const SizedBox.shrink()
+          : _BusBottomCard(
+              key: ValueKey(selectedBus!.code),
+              bus: selectedBus!,
+              activeBusCount: activeBusCount,
+              routeFare: routeFare,
+              selectedStatus: selectedStatus,
+              selectedLastUpdate: selectedLastUpdate,
+              etaText: etaText,
+            ),
+    );
+  }
+}
+
+// Bottom Card Content Widget
+class _BusBottomCard extends StatelessWidget {
+  final BusInfo bus;
+  final int activeBusCount;
+  final String? routeFare;
+  final String? selectedStatus;
+  final DateTime? selectedLastUpdate;
+  final String? etaText;
+
+  const _BusBottomCard({
+    super.key,
+    required this.bus,
+    required this.activeBusCount,
+    this.routeFare,
+    this.selectedStatus,
+    this.selectedLastUpdate,
+    this.etaText,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final String busCode = bus.code;
+    final String plate = bus.plateNo;
+    final String status = selectedStatus ?? 'In Service';
+
+    final bool isActive = status.toLowerCase() == 'in service';
+
+    final Color statusColor;
+    if (status.toLowerCase().contains('delay')) {
+      statusColor = const Color(0xFFFFA726); // orange
+    } else if (status.toLowerCase().contains('break')) {
+      statusColor = const Color(0xFFE53935); // red
+    } else if (status.toLowerCase().contains('full')) {
+      statusColor = const Color(0xFF42A5F5); // blue
+    } else {
+      statusColor = const Color(0xFF43A047); // green
+    }
+
+    final String activeLabel = activeBusCount <= 0
+        ? 'No buses active'
+        : '$activeBusCount bus${activeBusCount > 1 ? 'es' : ''} active';
+
+    String? lastUpdatedFormatted;
+    if (selectedLastUpdate != null) {
+      final now = DateTime.now();
+      final difference = now.difference(selectedLastUpdate!);
+      
+      if (difference.inSeconds < 60) {
+        lastUpdatedFormatted = '${difference.inSeconds}s ago';
+      } else if (difference.inMinutes < 60) {
+        lastUpdatedFormatted = '${difference.inMinutes}m ago';
+      } else if (difference.inHours < 24) {
+        lastUpdatedFormatted = '${difference.inHours}h ago';
+      } else {
+        lastUpdatedFormatted = '${selectedLastUpdate!.day}/${selectedLastUpdate!.month} ${selectedLastUpdate!.hour}:${selectedLastUpdate!.minute.toString().padLeft(2, '0')}';
+      }
+    }
+
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.12),
+            blurRadius: 12,
+            offset: const Offset(0, -4),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Small drag handle
+          Container(
+            width: 36,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.grey.shade300,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Row 1: Bus + Fare
+          Row(
+            children: [
+              const Icon(Icons.directions_bus, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Bus $busCode ($plate)',
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              if (routeFare != null)
+                Text(
+                  routeFare!,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+
+          // Row 2: Active count + Status pill
+          Row(
+            children: [
+              const Icon(Icons.people_alt_outlined, size: 18),
+              const SizedBox(width: 6),
+              Text(
+                activeLabel,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Colors.grey.shade800,
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: statusColor.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      isActive ? Icons.check_circle : Icons.error_outline,
+                      size: 16,
+                      color: statusColor,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      status,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: statusColor,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (etaText != null) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Icon(Icons.access_time, size: 16, color: Colors.grey.shade600),
+                const SizedBox(width: 4),
+                Text(
+                  etaText!,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey.shade700,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ],
+          if (lastUpdatedFormatted != null) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Icon(Icons.update, size: 16, color: Colors.grey.shade600),
+                const SizedBox(width: 4),
+                Text(
+                  'Last updated: $lastUpdatedFormatted',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey.shade700,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

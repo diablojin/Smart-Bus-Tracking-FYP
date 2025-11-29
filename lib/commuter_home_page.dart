@@ -33,11 +33,21 @@ class _CommuterHomePageState extends State<CommuterHomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Commuter Home'),
-        centerTitle: true,
-        automaticallyImplyLeading: false, // Remove default back button
-      ),
+      // Only show AppBar when NOT on Routes tab (index 1)
+      // Routes tab has its own AppBar in CommuterRoutesPage
+      appBar: _selectedIndex == 1
+          ? null
+          : AppBar(
+              centerTitle: true,
+              title: Text(
+                _selectedIndex == 2 ? 'Profile' : 'Commuter Home',
+                style: const TextStyle(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              elevation: 0,
+              automaticallyImplyLeading: false, // Remove default back button
+            ),
       body: _pages[_selectedIndex],
       bottomNavigationBar: BottomNavigationBar(
         type: BottomNavigationBarType.fixed,
@@ -62,192 +72,286 @@ class _CommuterHomePageState extends State<CommuterHomePage> {
   }
 }
 
-// Home Tab Content - News & Status Dashboard
-class _HomeTab extends StatelessWidget {
+// Home Tab Content - New implementation with greeting + Plan Trip + Latest Updates
+class _HomeTab extends StatefulWidget {
   const _HomeTab();
 
-  String _getGreeting() {
-    final hour = DateTime.now().hour;
-    if (hour < 12) {
-      return 'Good Morning, Commuter! ☀️';
-    } else if (hour < 17) {
-      return 'Good Afternoon, Commuter! 👋';
-    } else {
-      return 'Good Evening, Commuter! 🌙';
+  @override
+  State<_HomeTab> createState() => _HomeTabState();
+}
+
+class _HomeTabState extends State<_HomeTab> {
+  String? _displayName;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUserName();
+  }
+
+  String _formatName(String raw) {
+    // If an email sneaks in, strip the domain.
+    if (raw.contains('@')) {
+      raw = raw.split('@').first;
     }
+
+    // Replace underscores with spaces.
+    raw = raw.replaceAll('_', ' ');
+
+    // Optionally remove digits.
+    raw = raw.replaceAll(RegExp(r'[0-9]'), '');
+
+    raw = raw.trim();
+    if (raw.isEmpty) return 'Commuter';
+
+    // Capitalize first letter.
+    return raw[0].toUpperCase() + raw.substring(1);
+  }
+
+  void _loadUserName() {
+    final user = supabase.auth.currentUser;
+    if (user == null) {
+      setState(() {
+        _displayName = 'Commuter';
+      });
+      return;
+    }
+
+    // Try to use user metadata or email prefix as a fallback
+    final fullName = user.userMetadata?['name'] as String?;
+    final email = user.email ?? '';
+    final emailName = email.contains('@') ? email.split('@').first : email;
+
+    setState(() {
+      if (fullName != null && fullName.trim().isNotEmpty) {
+        _displayName = fullName.trim();
+      } else if (emailName.isNotEmpty) {
+        _displayName = _formatName(emailName);
+      } else {
+        _displayName = 'Commuter';
+      }
+    });
+  }
+
+  String _greetingForNow() {
+    final hour = DateTime.now().hour;
+    if (hour < 12) return 'Good Morning';
+    if (hour < 18) return 'Good Afternoon';
+    return 'Good Evening';
+  }
+
+  String _formattedDate() {
+    final now = DateTime.now();
+    // Simple, readable date without extra dependencies
+    final weekdays = [
+      'Sunday',
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+    ];
+    final months = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
+    ];
+
+    final dayName = weekdays[now.weekday % 7];
+    final monthName = months[now.month - 1];
+
+    return '$dayName, $monthName ${now.day}, ${now.year}';
+  }
+
+  void _onPlanTripPressed() {
+    // Navigate to Routes tab (which shows Stop-to-Stop Search)
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const CommuterRoutesPage(),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final now = DateTime.now();
-    final weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-    final months = ['January', 'February', 'March', 'April', 'May', 'June', 
-                    'July', 'August', 'September', 'October', 'November', 'December'];
-    final formattedDate = '${weekdays[now.weekday - 1]}, ${months[now.month - 1]} ${now.day}, ${now.year}';
-    
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        // Header with Greeting
-        Column(
+    final name = _displayName ?? 'Commuter';
+
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Greeting
             Text(
-              _getGreeting(),
+              '${_greetingForNow()}, $name! 👋',
               style: const TextStyle(
-                fontSize: 28,
-                fontWeight: FontWeight.bold,
+                fontSize: 24,
+                fontWeight: FontWeight.w700,
               ),
             ),
             const SizedBox(height: 4),
             Text(
-              formattedDate,
+              _formattedDate(),
               style: TextStyle(
                 fontSize: 14,
-                color: Colors.grey[600],
+                color: Colors.grey.shade700,
               ),
             ),
-          ],
-        ),
-        const SizedBox(height: 24),
-        
-        // System Status Card (Prominent Green Card)
-        Container(
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Colors.green.shade50,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: Colors.green.shade200,
-              width: 1.5,
-            ),
-          ),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.green,
-                  borderRadius: BorderRadius.circular(12),
+            const SizedBox(height: 24),
+
+            // Primary CTA: Plan Trip (replaces the old "Service Normal" card)
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _onPlanTripPressed,
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
                 ),
-                child: const Icon(
-                  Icons.check_circle,
-                  color: Colors.white,
-                  size: 32,
-                ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: const [
+                    Icon(Icons.directions_bus),
+                    SizedBox(width: 8),
                     Text(
-                      'Service Normal',
+                      'Plan My Trip',
                       style: TextStyle(
                         fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.green.shade900,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'All buses running on schedule',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.green.shade700,
-                      ),
-                    ),
+                    SizedBox(width: 8),
+                    Icon(Icons.arrow_forward_rounded, size: 20),
                   ],
                 ),
               ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 28),
-        
-        // Latest Updates Section
-        const Text(
-          'Latest Updates',
-          style: TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const SizedBox(height: 12),
-        _buildAnnouncementCard(
-          'Service Alert',
-          'Route 750 frequency increased for peak hours.',
-          Icons.notifications_active,
-          Colors.blue,
-        ),
-        const SizedBox(height: 12),
-        _buildAnnouncementCard(
-          'Maintenance',
-          'MRT feeder bus T815 temporarily rerouted.',
-          Icons.construction,
-          Colors.orange,
-        ),
-        const SizedBox(height: 12),
-        _buildAnnouncementCard(
-          'App Update',
-          'New Dark Mode available for night travelers.',
-          Icons.new_releases,
-          Colors.purple,
-        ),
-        const SizedBox(height: 20),
-      ],
-    );
-  }
-  
-  Widget _buildAnnouncementCard(
-    String title,
-    String message,
-    IconData icon,
-    Color color,
-  ) {
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: color.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(icon, color: color, size: 28),
             ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    message,
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey[600],
-                      height: 1.4,
-                    ),
-                  ),
-                ],
+            const SizedBox(height: 24),
+
+            // Latest updates header
+            const Text(
+              'Latest Updates 🔔',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
               ),
             ),
+            const SizedBox(height: 12),
+
+            // Example update cards (static for now; you can bind to real data later)
+            const _UpdateCard(
+              icon: Icons.notifications_active,
+              iconBgColor: Color(0xFFE3F2FD),
+              iconColor: Color(0xFF1565C0),
+              title: 'Service Alert',
+              subtitle: 'Route 750 frequency increased for peak hours.',
+            ),
+            const SizedBox(height: 10),
+            const _UpdateCard(
+              icon: Icons.build,
+              iconBgColor: Color(0xFFFFF3E0),
+              iconColor: Color(0xFFEF6C00),
+              title: 'Maintenance',
+              subtitle: 'MRT feeder bus TB15 temporarily rerouted.',
+            ),
+            const SizedBox(height: 10),
+            const _UpdateCard(
+              icon: Icons.system_update_alt,
+              iconBgColor: Color(0xFFF3E5F5),
+              iconColor: Color(0xFF6A1B9A),
+              title: 'App Update',
+              subtitle: 'New Dark Mode available for night travellers.',
+            ),
+            const SizedBox(height: 24),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// Simple reusable card for "Latest Updates"
+class _UpdateCard extends StatelessWidget {
+  final IconData icon;
+  final Color iconBgColor;
+  final Color iconColor;
+  final String title;
+  final String subtitle;
+
+  const _UpdateCard({
+    required this.icon,
+    required this.iconBgColor,
+    required this.iconColor,
+    required this.title,
+    required this.subtitle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: iconBgColor,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(
+              icon,
+              color: iconColor,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Colors.grey.shade700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
