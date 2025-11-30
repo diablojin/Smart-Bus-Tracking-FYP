@@ -1,9 +1,21 @@
 import 'package:flutter/material.dart';
+import 'package:postgrest/postgrest.dart';
 
 import '../../config/supabase_client.dart';
 
 class ReportIssuePage extends StatefulWidget {
-  const ReportIssuePage({super.key});
+  final String routeId;
+  final String routeName;
+  final String? busId;
+  final String? busName;
+
+  const ReportIssuePage({
+    super.key,
+    required this.routeId,
+    required this.routeName,
+    this.busId,
+    this.busName,
+  });
 
   @override
   State<ReportIssuePage> createState() => _ReportIssuePageState();
@@ -14,25 +26,24 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
   final _formKey = GlobalKey<FormState>();
 
   // Form state
-  String? _selectedRoute;
-  String? _selectedBus;
   String? _selectedIssueType;
+  String? _selectedBusId; // For bus dropdown if bus is not provided
   final TextEditingController _commentsController = TextEditingController();
   
   bool _isSubmitting = false;
+  List<Map<String, dynamic>> _availableBuses = []; // For dropdown when bus is not provided
 
-  // Route options
-  final List<String> _routes = const [
-    'Route 750 (UiTM Shah Alam – Pasar Seni)',
-    'GOKL-01 – GOKL Green Line',
-  ];
+  // Getter to check if bus is preselected
+  bool get _isBusPreselected => widget.busId != null;
 
-  // Bus options
-  final List<String> _buses = const [
-    'Bus 750-A',
-    'Bus 750-B',
-    'Bus 750-C',
-  ];
+  @override
+  void initState() {
+    super.initState();
+    // If bus is not provided, load buses for the route
+    if (widget.busId == null) {
+      _loadBusesForRoute();
+    }
+  }
 
   // Issue type options
   final List<String> _issueTypes = const [
@@ -49,9 +60,39 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     super.dispose();
   }
 
+  Future<void> _loadBusesForRoute() async {
+    try {
+      // widget.routeId is the numeric route ID as a string
+      final routeId = int.tryParse(widget.routeId);
+      if (routeId == null) return;
+
+      final response = await supabase
+          .from('buses')
+          .select('id, code, plate_no')
+          .eq('route_id', routeId)
+          .eq('is_active', true)
+          .order('code');
+
+      _availableBuses = (response as List)
+          .map((row) => row as Map<String, dynamic>)
+          .toList();
+
+      if (mounted) {
+        setState(() {});
+      }
+    } catch (e) {
+      print('Error loading buses: $e');
+    }
+  }
+
   Future<void> _submitReport() async {
-    // Validation using form key
-    if (!_formKey.currentState!.validate()) {
+    // Validate issue type
+    if (_selectedIssueType == null || _selectedIssueType!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select an issue type.'),
+        ),
+      );
       return;
     }
 
@@ -65,58 +106,82 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
       return;
     }
 
-    setState(() {
-      _isSubmitting = true;
-    });
-
-    final route = _selectedRoute ?? '';
-    final bus = _selectedBus ?? '';
-    final issueType = _selectedIssueType ?? '';
-    final description = _commentsController.text.trim();
-
     try {
+      setState(() {
+        _isSubmitting = true;
+      });
+
+      final comments = _commentsController.text.trim();
+
+      // Resolve bus name: if user selected from dropdown, get it from dropdown state
+      // Otherwise use widget.busName (if provided)
+      String? selectedBusName;
+      if (_selectedBusId != null) {
+        // User selected a bus from dropdown - resolve the name
+        try {
+          final selectedBus = _availableBuses.firstWhere(
+            (b) => b['id'].toString() == _selectedBusId,
+          );
+          final busCode = selectedBus['code'] as String? ?? '';
+          final busPlate = selectedBus['plate_no'] as String? ?? '';
+          selectedBusName = 'Bus $busCode ($busPlate)';
+        } catch (e) {
+          // Bus not found in list, use empty string
+          selectedBusName = '';
+        }
+      } else {
+        // No bus selected from dropdown, use widget.busName if provided
+        selectedBusName = widget.busName;
+      }
+
       await supabase.from('issue_reports').insert({
         'user_id': user.id,
-        'route': route,
-        'bus': bus,
-        'issue_type': issueType,
-        'description': description,
+        'route': widget.routeName,
+        'bus': _selectedBusId != null
+            ? selectedBusName
+            : widget.busName,
+        'issue_type': _selectedIssueType,
+        'description': comments.isEmpty ? '' : comments,
       });
 
+      // If insert succeeded:
       if (!mounted) return;
-
-      setState(() {
-        _isSubmitting = false;
-      });
-
+      
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Your issue has been reported. Thank you!'),
+          content: Text('Report submitted successfully.'),
           backgroundColor: Colors.green,
         ),
       );
-
-      // Navigate back to Profile after success
+      
       Navigator.of(context).pop();
-    } catch (error, stackTrace) {
-      // Log for debugging
-      // ignore: avoid_print
-      print('Error inserting issue report: $error');
-      // ignore: avoid_print
-      print(stackTrace);
-
+    } on PostgrestException catch (e) {
+      // Show real Supabase error for debugging
       if (!mounted) return;
-
-      setState(() {
-        _isSubmitting = false;
-      });
-
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to submit report: ${e.message}'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      debugPrint('Report insert error: ${e.message}');
+    } catch (e) {
+      if (!mounted) return;
+      
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Failed to submit report. Please try again.'),
           backgroundColor: Colors.red,
         ),
       );
+      debugPrint('Report insert unknown error: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+      }
     }
   }
 
@@ -145,118 +210,157 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
                   ),
                   const SizedBox(height: 28),
 
-                  // Route Dropdown
+                  // Route Field (always locked)
                   const Text(
-                    'Select Route *',
+                    'Route *',
                     style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
                   const SizedBox(height: 8),
-                  DropdownButtonFormField<String>(
-                    value: _selectedRoute,
-                    isExpanded: true,
-                    decoration: InputDecoration(
-                      hintText: 'Choose a route',
-                      filled: true,
-                      fillColor: Colors.white,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: Colors.grey.shade300),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(
-                          color: Theme.of(context).primaryColor,
-                          width: 2,
-                        ),
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 14,
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 14,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).brightness == Brightness.dark
+                          ? Colors.grey.shade800
+                          : Colors.grey.shade100,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: Theme.of(context).brightness == Brightness.dark
+                            ? Colors.grey.shade700
+                            : Colors.grey.shade300,
                       ),
                     ),
-                    items: _routes.map((route) {
-                      return DropdownMenuItem(
-                        value: route,
-                        child: Text(
-                          route,
-                          overflow: TextOverflow.ellipsis,
-                          maxLines: 1,
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.lock_outline,
+                          size: 18,
+                          color: Theme.of(context).brightness == Brightness.dark
+                              ? Colors.grey.shade400
+                              : Colors.grey.shade600,
                         ),
-                      );
-                    }).toList(),
-                    validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return 'Please select a route';
-                      }
-                      return null;
-                    },
-                    onChanged: (value) {
-                      setState(() {
-                        _selectedRoute = value;
-                      });
-                    },
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            widget.routeName,
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: Theme.of(context).brightness == Brightness.dark
+                                  ? Colors.grey.shade300
+                                  : Colors.grey.shade700,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                   const SizedBox(height: 20),
 
-                  // Bus Dropdown
+                  // Bus Field (locked if provided, dropdown if not)
                   const Text(
-                    'Select Bus *',
+                    'Bus',
                     style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
                   const SizedBox(height: 8),
-                  DropdownButtonFormField<String>(
-                    value: _selectedBus,
-                    isExpanded: true,
-                    decoration: InputDecoration(
-                      hintText: 'Choose a bus',
-                      filled: true,
-                      fillColor: Colors.white,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: Colors.grey.shade300),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(
-                          color: Theme.of(context).primaryColor,
-                          width: 2,
-                        ),
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(
+                  if (_isBusPreselected)
+                    // Locked bus display
+                    Container(
+                      padding: const EdgeInsets.symmetric(
                         horizontal: 16,
                         vertical: 14,
                       ),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).brightness == Brightness.dark
+                            ? Colors.grey.shade800
+                            : Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Theme.of(context).brightness == Brightness.dark
+                              ? Colors.grey.shade700
+                              : Colors.grey.shade300,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.lock_outline,
+                            size: 18,
+                            color: Theme.of(context).brightness == Brightness.dark
+                                ? Colors.grey.shade400
+                                : Colors.grey.shade600,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              widget.busName ?? 'Selected bus',
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: Theme.of(context).brightness == Brightness.dark
+                                    ? Colors.grey.shade300
+                                    : Colors.grey.shade700,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  else
+                    // Enabled bus dropdown (optional)
+                    DropdownButtonFormField<String>(
+                      value: _selectedBusId,
+                      isExpanded: true,
+                      decoration: InputDecoration(
+                        hintText: 'Choose a bus (optional)',
+                        filled: true,
+                        fillColor: Theme.of(context).brightness == Brightness.dark
+                            ? Colors.grey.shade800
+                            : Colors.white,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(
+                            color: Theme.of(context).brightness == Brightness.dark
+                                ? Colors.grey.shade700
+                                : Colors.grey.shade300,
+                          ),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(
+                            color: Theme.of(context).primaryColor,
+                            width: 2,
+                          ),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 14,
+                        ),
+                      ),
+                      items: _availableBuses.map((bus) {
+                        final busCode = bus['code'] as String? ?? '';
+                        final busPlate = bus['plate_no'] as String? ?? '';
+                        final busId = bus['id'].toString();
+                        return DropdownMenuItem(
+                          value: busId,
+                          child: Text('Bus $busCode ($busPlate)'),
+                        );
+                      }).toList(),
+                      onChanged: (value) {
+                        setState(() {
+                          _selectedBusId = value;
+                        });
+                      },
                     ),
-                    items: _buses.map((bus) {
-                      return DropdownMenuItem(
-                        value: bus,
-                        child: Text(bus),
-                      );
-                    }).toList(),
-                    validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return 'Please select a bus';
-                      }
-                      return null;
-                    },
-                    onChanged: (value) {
-                      setState(() {
-                        _selectedBus = value;
-                      });
-                    },
-                  ),
                   const SizedBox(height: 20),
 
                   // Issue Type Dropdown
@@ -274,13 +378,19 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
                     decoration: InputDecoration(
                       hintText: 'Select issue type',
                       filled: true,
-                      fillColor: Colors.white,
+                      fillColor: Theme.of(context).brightness == Brightness.dark
+                          ? Colors.grey.shade800
+                          : Colors.white,
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: Colors.grey.shade300),
+                        borderSide: BorderSide(
+                          color: Theme.of(context).brightness == Brightness.dark
+                              ? Colors.grey.shade700
+                              : Colors.grey.shade300,
+                        ),
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
@@ -329,13 +439,19 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
                     decoration: InputDecoration(
                       hintText: 'Describe the issue in detail...',
                       filled: true,
-                      fillColor: Colors.white,
+                      fillColor: Theme.of(context).brightness == Brightness.dark
+                          ? Colors.grey.shade800
+                          : Colors.white,
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
                       enabledBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: Colors.grey.shade300),
+                        borderSide: BorderSide(
+                          color: Theme.of(context).brightness == Brightness.dark
+                              ? Colors.grey.shade700
+                              : Colors.grey.shade300,
+                        ),
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),

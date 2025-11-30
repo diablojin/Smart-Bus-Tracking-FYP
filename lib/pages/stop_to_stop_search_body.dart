@@ -4,10 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 
 import '../services/route_search_service.dart';
+import '../models/stop_model.dart';
+import '../models/route_stop_model.dart';
 import '../commuter_map_page.dart';
+import '../config/supabase_client.dart';
+import 'commuter/report_page.dart';
 
-/// Reusable widget containing the Stop-to-Stop search form and results
-/// Can be used in Routes tab or as a standalone page
+/// Reusable widget containing the Stop-to-Stop search form and results.
+/// Uses the new route_stops junction table schema for proper journey planning.
 class StopToStopSearchBody extends StatefulWidget {
   const StopToStopSearchBody({super.key});
 
@@ -16,94 +20,114 @@ class StopToStopSearchBody extends StatefulWidget {
 }
 
 class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
-  List<Stop> _allStops = [];
-  List<Stop> _toStops = []; // Reordered list for "To" dropdown
-  bool _isLoadingStops = true;
+  RouteDataBundle? _bundle;
+  bool _isLoadingBundle = true;
   bool _isSearching = false;
   bool _detectingLocation = false;
+
+  // Unique stops by name (first occurrence kept)
+  List<StopModel> _uniqueStops = [];
   
-  Stop? _selectedFromStop;
-  Stop? _selectedToStop;
-  
-  RouteSearchResult? _searchResult;
+  String? _fromStopName;
+  String? _toStopName;
+  List<RouteSearchResult> _results = [];
   String? _errorMessage;
-  
-  // Selection state for tracking
-  BusInfo? _selectedBusForTracking;
-  RouteSearchResult? _selectedRouteResult; // Store the route result for the selected bus
 
   @override
   void initState() {
     super.initState();
-    _loadStops();
+    _loadRouteDataBundle();
   }
 
-  Future<void> _loadStops() async {
+  Future<void> _loadRouteDataBundle() async {
     try {
+      if (!mounted) return;
       setState(() {
-        _isLoadingStops = true;
+        _isLoadingBundle = true;
         _errorMessage = null;
       });
+
+      final bundle = await RouteSearchService.loadRouteDataBundle();
+
+      if (!mounted) return;
       
-      final stops = await RouteSearchService.getAllStops();
-      
+      // Build unique stops list keyed by name (keep first occurrence)
+      final Map<String, StopModel> uniqueStopsMap = {};
+      for (final stop in bundle.stops) {
+        if (!uniqueStopsMap.containsKey(stop.name)) {
+          uniqueStopsMap[stop.name] = stop;
+        }
+      }
+      final uniqueStops = uniqueStopsMap.values.toList();
+      // Sort alphabetically by name for better UX
+      uniqueStops.sort((a, b) => a.name.compareTo(b.name));
+
       setState(() {
-        _allStops = stops;
-        _toStops = List.of(stops); // Initialize with all stops
-        _isLoadingStops = false;
+        _bundle = bundle;
+        _uniqueStops = uniqueStops;
+        _isLoadingBundle = false;
       });
-    } catch (e) {
+    } catch (e, stackTrace) {
+      print('❌ Error in _loadRouteDataBundle: $e');
+      print('Stack trace: $stackTrace');
+      if (!mounted) return;
       setState(() {
-        _isLoadingStops = false;
-        _errorMessage = 'Failed to load stops: $e';
+        _isLoadingBundle = false;
+        // Show a more user-friendly error message
+        final errorMsg = e.toString();
+        if (errorMsg.contains('Null') && errorMsg.contains('String')) {
+          _errorMessage = 'Database error: Some route data is missing. Please check your Supabase tables have all required fields (route_code, route_name, stop_code, stop_name).';
+        } else {
+          _errorMessage = 'Failed to load route data: ${e.toString()}';
+        }
       });
     }
   }
 
-  Future<void> _searchRoute() async {
-    if (_selectedFromStop == null || _selectedToStop == null) {
+  void _searchRoutes() {
+    if (_fromStopName == null || _toStopName == null || _bundle == null) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = 'Please select both From and To stops';
       });
       return;
     }
 
-    if (_selectedFromStop!.id == _selectedToStop!.id) {
+    if (_fromStopName == _toStopName) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = 'From and To stops must be different';
       });
       return;
     }
 
-    try {
-      setState(() {
-        _isSearching = true;
-        _errorMessage = null;
-        _searchResult = null;
-      });
+    if (!mounted) return;
+    setState(() {
+      _isSearching = true;
+      _errorMessage = null;
+    });
 
-      final result = await RouteSearchService.searchRoute(
-        fromStopId: _selectedFromStop!.id,
-        toStopId: _selectedToStop!.id,
+    try {
+      final matches = RouteSearchService.searchRoutes(
+        bundle: _bundle!,
+        fromStopName: _fromStopName!,
+        toStopName: _toStopName!,
       );
 
+      if (!mounted) return;
       setState(() {
         _isSearching = false;
-        if (result == null) {
-          _errorMessage = 'No direct route found between these stops. '
-              'Please check if they are on the same route.';
-          _selectedBusForTracking = null; // Clear selection on new search
-          _selectedRouteResult = null;
-        } else {
-          _searchResult = result;
-          _selectedBusForTracking = null; // Clear selection on new search
-          _selectedRouteResult = null;
+        _results = matches;
+
+        if (matches.isEmpty) {
+          _errorMessage = 'No direct routes found between these stops.';
         }
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _isSearching = false;
-        _errorMessage = 'Error searching route: $e';
+        _errorMessage = 'Error searching routes: $e';
       });
     }
   }
@@ -113,7 +137,6 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        print('⚠️ Location services are disabled');
         return null;
       }
 
@@ -121,48 +144,45 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) {
-          print('⚠️ Location permission denied by user');
           return null;
         }
       }
 
       if (permission == LocationPermission.deniedForever) {
-        print('⚠️ Location permission permanently denied');
         return null;
       }
 
-      // Add timeout to prevent hanging on emulator
       return await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.medium, // Changed from high to medium for emulator compatibility
-        timeLimit: const Duration(seconds: 10), // 10 second timeout
+        desiredAccuracy: LocationAccuracy.medium,
+        timeLimit: const Duration(seconds: 10),
       ).timeout(
         const Duration(seconds: 10),
         onTimeout: () {
-          print('⚠️ Location request timed out (emulator may not have GPS)');
           throw TimeoutException('Location request timed out');
         },
       );
     } catch (e) {
-      print('❌ Error getting current position: $e');
       return null;
     }
   }
 
-  /// Find the nearest stop from current position
-  Stop? _findNearestStop(Position position) {
-    if (_allStops.isEmpty) return null;
+  /// Find the nearest stop from current position (by name)
+  String? _findNearestStopName(Position position) {
+    if (_bundle == null || _bundle!.stops.isEmpty) return null;
 
     try {
-      Stop? nearest;
+      StopModel? nearest;
       double? nearestDistance;
 
-      for (final stop in _allStops) {
+      for (final stop in _bundle!.stops) {
+        if (stop.latitude == null || stop.longitude == null) continue;
+
         try {
           final distance = Geolocator.distanceBetween(
             position.latitude,
             position.longitude,
-            stop.latitude,
-            stop.longitude,
+            stop.latitude!,
+            stop.longitude!,
           );
 
           if (nearest == null || distance < nearestDistance!) {
@@ -170,52 +190,19 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
             nearestDistance = distance;
           }
         } catch (e) {
-          print('⚠️ Error calculating distance to stop ${stop.name}: $e');
-          continue; // Skip this stop and continue with next
+          continue;
         }
       }
 
-      return nearest;
+      return nearest?.name;
     } catch (e) {
-      print('❌ Error in _findNearestStop: $e');
       return null;
     }
   }
 
-  /// Reorder the "To" stops list based on the selected "From" stop's route code
-  /// Stops with the same route code as the "From" stop will appear at the top
-  void _reorderToStops() {
-    if (_selectedFromStop == null) {
-      // No From stop selected, show all stops in default order
-      _toStops = List.of(_allStops);
-      return;
-    }
-
-    final selectedRouteCode = _selectedFromStop!.routeCode;
-
-    // If the selected From stop doesn't have a route code, keep default order
-    if (selectedRouteCode == null || selectedRouteCode.isEmpty) {
-      _toStops = List.of(_allStops);
-      return;
-    }
-
-    // Sort stops: same route code first, then others, both alphabetically by name
-    _toStops = List.of(_allStops)
-      ..sort((a, b) {
-        final aMatch = a.routeCode == selectedRouteCode ? 0 : 1;
-        final bMatch = b.routeCode == selectedRouteCode ? 0 : 1;
-
-        if (aMatch != bMatch) {
-          return aMatch - bMatch; // Same route stops come first
-        }
-
-        // Within each group, sort alphabetically by name
-        return a.name.compareTo(b.name);
-      });
-  }
-
   /// Use current location to auto-select the From stop
   Future<void> _useCurrentLocationAsFrom() async {
+    if (!mounted) return;
     setState(() {
       _detectingLocation = true;
       _errorMessage = null;
@@ -224,27 +211,17 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
     try {
       final position = await _getCurrentPosition();
       if (position == null) {
+        if (!mounted) return;
         setState(() {
           _detectingLocation = false;
-          _errorMessage = 'Unable to get current location. '
-              'Please enable GPS in emulator settings or check location permissions.';
+          _errorMessage = 'Unable to get current location. Please enable GPS or check location permissions.';
         });
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Tip: In Android Emulator, go to Settings > Location to enable GPS',
-              ),
-              backgroundColor: Colors.orange,
-              duration: Duration(seconds: 4),
-            ),
-          );
-        }
         return;
       }
 
-      final nearest = _findNearestStop(position);
-      if (nearest == null) {
+      final nearestStopName = _findNearestStopName(position);
+      if (nearestStopName == null) {
+        if (!mounted) return;
         setState(() {
           _detectingLocation = false;
           _errorMessage = 'No stops available in the system.';
@@ -252,54 +229,20 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
         return;
       }
 
-      // Calculate distance in km for display
-      final distanceInMeters = Geolocator.distanceBetween(
-        position.latitude,
-        position.longitude,
-        nearest.latitude,
-        nearest.longitude,
-      );
-      final distanceInKm = (distanceInMeters / 1000).toStringAsFixed(2);
-
+      if (!mounted) return;
       setState(() {
-        _selectedFromStop = nearest;
+        _fromStopName = nearestStopName;
         _detectingLocation = false;
-        _searchResult = null; // Clear previous results
-        _reorderToStops(); // Reorder To stops based on selected From stop
+        _results = [];
       });
-
-      // Show confirmation to user
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Nearest stop: ${nearest.name} (${distanceInKm} km away)',
-            ),
-            backgroundColor: Colors.green,
-            duration: const Duration(seconds: 3),
-          ),
-        );
-      }
     } on TimeoutException {
+      if (!mounted) return;
       setState(() {
         _detectingLocation = false;
-        _errorMessage = 'Location request timed out. '
-            'Emulator may not have GPS enabled. Please enable location in emulator settings.';
+        _errorMessage = 'Location request timed out.';
       });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Location timeout. Enable GPS in Emulator: Settings > Location',
-            ),
-            backgroundColor: Colors.orange,
-            duration: Duration(seconds: 4),
-          ),
-        );
-      }
-    } catch (e, stackTrace) {
-      print('❌ Error in _useCurrentLocationAsFrom: $e');
-      print('Stack trace: $stackTrace');
+    } catch (e) {
+      if (!mounted) return;
       setState(() {
         _detectingLocation = false;
         _errorMessage = 'Failed to detect location: ${e.toString()}';
@@ -307,380 +250,490 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final cardColor = isDark ? const Color(0xFF1E1E1E) : Colors.white;
-    final labelColor = isDark ? Colors.white : Colors.black87;
-    final hintColor = isDark ? Colors.white70 : Colors.grey.shade600;
-
-    return _isLoadingStops
-        ? const Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(height: 16),
-                Text('Loading stops...'),
-              ],
-            ),
-          )
-        : _allStops.isEmpty
-            ? Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.error_outline, size: 64, color: Colors.grey[400]),
-                    const SizedBox(height: 16),
-                    Text(
-                      'No stops available',
-                      style: TextStyle(fontSize: 16, color: Colors.grey[600]),
-                    ),
-                    const SizedBox(height: 8),
-                    TextButton(
-                      onPressed: _loadStops,
-                      child: const Text('Retry'),
-                    ),
-                  ],
-                ),
-              )
-            : SingleChildScrollView(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Instructions
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.blue.shade50,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.blue.shade200),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(Icons.info_outline, color: Colors.blue.shade700),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              'Select your starting stop and destination to find routes',
-                              style: const TextStyle(
-                                fontSize: 13,
-                                color: Colors.black87,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-
-                    // From Stop Label with "Use Current Location" button
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          'From Stop',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: labelColor,
-                          ),
-                        ),
-                        InkWell(
-                          onTap: _detectingLocation ? null : _useCurrentLocationAsFrom,
-                          borderRadius: BorderRadius.circular(20),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFE8F5E9), // soft green background
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (_detectingLocation)
-                                  const SizedBox(
-                                    width: 14,
-                                    height: 14,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Color(0xFF2E7D32),
-                                    ),
-                                  )
-                                else
-                                  const Icon(
-                                    Icons.my_location,
-                                    size: 16,
-                                    color: Color(0xFF2E7D32),
-                                  ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  _detectingLocation ? 'Detecting...' : 'Use Current Location',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w500,
-                                    color: Color(0xFF2E7D32),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    DropdownButtonFormField<Stop>(
-                      value: _selectedFromStop,
-                      hint: Text(
-                        'Select starting stop',
-                        style: TextStyle(color: hintColor),
-                      ),
-                      decoration: InputDecoration(
-                        prefixIcon: const Icon(Icons.trip_origin),
-                        filled: true,
-                        fillColor: cardColor,
-                        hintText: 'Select starting stop',
-                        hintStyle: TextStyle(color: hintColor),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Colors.grey.shade600),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(
-                            color: Theme.of(context).colorScheme.primary,
-                            width: 1.5,
-                          ),
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 10,
-                        ),
-                      ),
-                      isExpanded: true,
-                      items: _allStops.map((stop) {
-                        return DropdownMenuItem<Stop>(
-                          value: stop,
-                          child: Text(
-                            stop.routeCode != null && stop.routeCode!.isNotEmpty
-                                ? '${stop.name} (${stop.routeCode})'
-                                : stop.name,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        );
-                      }).toList(),
-                      onChanged: (Stop? value) {
-                        setState(() {
-                          _selectedFromStop = value;
-                          _errorMessage = null;
-                          _searchResult = null;
-                          _selectedBusForTracking = null; // Clear selection when route changes
-                          _selectedRouteResult = null;
-                          _reorderToStops(); // Reorder To stops based on selected From stop
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 20),
-
-                    // To Stop Dropdown
-                    Text(
-                      'To Stop',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: labelColor,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    DropdownButtonFormField<Stop>(
-                      value: _selectedToStop,
-                      hint: Text(
-                        'Select destination stop',
-                        style: TextStyle(color: hintColor),
-                      ),
-                      decoration: InputDecoration(
-                        prefixIcon: const Icon(Icons.location_on),
-                        filled: true,
-                        fillColor: cardColor,
-                        hintText: 'Select destination stop',
-                        hintStyle: TextStyle(color: hintColor),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Colors.grey.shade600),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(
-                            color: Theme.of(context).colorScheme.primary,
-                            width: 1.5,
-                          ),
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 10,
-                        ),
-                      ),
-                      isExpanded: true,
-                      items: _toStops.map((stop) {
-                        return DropdownMenuItem<Stop>(
-                          value: stop,
-                          child: Text(
-                            stop.routeCode != null && stop.routeCode!.isNotEmpty
-                                ? '${stop.name} (${stop.routeCode})'
-                                : stop.name,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        );
-                      }).toList(),
-                      onChanged: (Stop? value) {
-                        setState(() {
-                          _selectedToStop = value;
-                          _errorMessage = null;
-                          _searchResult = null;
-                          _selectedBusForTracking = null; // Clear selection when route changes
-                          _selectedRouteResult = null;
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 24),
-
-                    // Search Button
-                    ElevatedButton(
-                      onPressed: _isSearching ? null : _searchRoute,
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      child: _isSearching
-                          ? const SizedBox(
-                              height: 20,
-                              width: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
-                            )
-                          : const Text(
-                              'Search Route',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                    ),
-                    const SizedBox(height: 24),
-
-                    // Error Message
-                    if (_errorMessage != null) ...[
-                      Container(
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.red.shade50,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.red.shade200),
-                        ),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Icon(Icons.error_outline, color: Colors.red.shade700),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                _errorMessage!,
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  color: Colors.red.shade900,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                    ],
-
-                    // Search Results
-                    if (_searchResult != null) ...[
-                      _buildSearchResult(_searchResult!),
-                    ],
-                    
-                    // Start Tracking Button (only shown when search result exists and bus is selected)
-                    if (_searchResult != null && _selectedBusForTracking != null && _selectedRouteResult != null) ...[
-                      const SizedBox(height: 24),
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton(
-                          onPressed: () {
-                            // Create trip selection
-                            final trip = TripSelection(
-                              route: _selectedRouteResult!.route,
-                              fromStop: _selectedRouteResult!.fromStop,
-                              toStop: _selectedRouteResult!.toStop,
-                              bus: _selectedBusForTracking!,
-                            );
-
-                            // Navigate to commuter map with trip selection
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => CommuterMapPage(tripSelection: trip),
-                              ),
-                            );
-                          },
-                          style: ElevatedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                          child: const Text(
-                            'Start Tracking',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 24), // Extra padding at bottom
-                    ],
-                  ],
-                ),
-              );
+  Future<void> _navigateToReport(RouteSearchResult result) async {
+    if (!mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ReportIssuePage(
+          routeId: result.route.id.toString(),
+          routeName: result.route.name,
+          busId: null, // Bus is not selected at this point
+          busName: null,
+        ),
+      ),
+    );
   }
 
-  Widget _buildSearchResult(RouteSearchResult result) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final cardColor = isDark ? const Color(0xFF1E1E1E) : Colors.white;
-    final textPrimary = isDark ? Colors.white : Colors.black87;
-    final textSecondary = isDark ? Colors.white70 : Colors.grey.shade700;
+  Future<void> _navigateToMap(RouteSearchResult result) async {
+    try {
+      // Fetch route info from Supabase to create RouteInfo
+      final routeResponse = await supabase
+          .from('routes')
+          .select()
+          .eq('id', result.route.id)
+          .maybeSingle();
 
-    return Container(
-      decoration: BoxDecoration(
-        color: cardColor,
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.15),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
+      if (routeResponse == null) {
+        // Fallback: navigate with just route code
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => CommuterMapPage(
+              initialRouteId: result.route.code,
+            ),
           ),
+        );
+        return;
+      }
+
+      final routeInfo = RouteInfo.fromJson(Map<String, dynamic>.from(routeResponse));
+
+      // Fetch first active bus for this route
+      final busesResponse = await supabase
+          .from('buses')
+          .select()
+          .eq('route_id', result.route.id)
+          .eq('is_active', true)
+          .limit(1);
+
+      BusInfo bus;
+      if (busesResponse.isNotEmpty) {
+        bus = BusInfo.fromJson(Map<String, dynamic>.from(busesResponse[0] as Map));
+      } else {
+        // Create a default bus if none found (will be updated when MQTT data arrives)
+        bus = BusInfo(
+          id: 0,
+          routeId: result.route.id,
+          plateNo: 'N/A',
+          code: '${result.route.code}-A',
+          isActive: true,
+        );
+      }
+
+      // Convert StopModel to Stop
+      // We need to find the actual stop records from Supabase that match the names and route
+      final fromStopResponse = await supabase
+          .from('stops')
+          .select()
+          .eq('stop_name', result.fromStop.name)
+          .limit(1)
+          .maybeSingle();
+
+      final toStopResponse = await supabase
+          .from('stops')
+          .select()
+          .eq('stop_name', result.toStop.name)
+          .limit(1)
+          .maybeSingle();
+
+      // Get route_stops to find sequence_index for these stops on this route
+      final routeStopsResponse = await supabase
+          .from('route_stops')
+          .select()
+          .eq('route_id', result.route.id);
+
+      final routeStops = (routeStopsResponse as List)
+          .map((rs) => RouteStopModel.fromMap(rs as Map<String, dynamic>))
+          .toList();
+
+      // Find sequence_index for from and to stops
+      int? fromSeq;
+      int? toSeq;
+      int? fromStopId;
+      int? toStopId;
+
+      for (final rs in routeStops) {
+        final stop = _bundle?.stopsById[rs.stopId];
+        if (stop != null) {
+          if (stop.name == result.fromStop.name) {
+            fromSeq = rs.seq;
+            fromStopId = rs.stopId;
+          }
+          if (stop.name == result.toStop.name) {
+            toSeq = rs.seq;
+            toStopId = rs.stopId;
+          }
+        }
+      }
+
+      // Create Stop objects (legacy format)
+      final fromStopData = fromStopResponse != null ? Map<String, dynamic>.from(fromStopResponse) : null;
+      final toStopData = toStopResponse != null ? Map<String, dynamic>.from(toStopResponse) : null;
+
+      final fromStop = Stop(
+        id: fromStopId ?? result.fromStop.id,
+        routeId: result.route.id,
+        name: result.fromStop.name,
+        latitude: result.fromStop.latitude ?? (fromStopData != null ? (fromStopData['latitude'] as num?)?.toDouble() ?? 0.0 : 0.0),
+        longitude: result.fromStop.longitude ?? (fromStopData != null ? (fromStopData['longitude'] as num?)?.toDouble() ?? 0.0 : 0.0),
+        sequenceIndex: fromSeq ?? 0,
+      );
+
+      final toStop = Stop(
+        id: toStopId ?? result.toStop.id,
+        routeId: result.route.id,
+        name: result.toStop.name,
+        latitude: result.toStop.latitude ?? (toStopData != null ? (toStopData['latitude'] as num?)?.toDouble() ?? 0.0 : 0.0),
+        longitude: result.toStop.longitude ?? (toStopData != null ? (toStopData['longitude'] as num?)?.toDouble() ?? 0.0 : 0.0),
+        sequenceIndex: toSeq ?? 0,
+      );
+
+      // Create TripSelection with all required data
+      final tripSelection = TripSelection(
+        route: routeInfo,
+        fromStop: fromStop,
+        toStop: toStop,
+        bus: bus,
+      );
+
+      // Navigate with TripSelection to enable live tracking and bottom card
+      if (!mounted) return;
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => CommuterMapPage(
+            tripSelection: tripSelection,
+            // Also pass route code as fallback
+            initialRouteId: result.route.code,
+            // Pass override stops for header display
+            overrideFromStop: result.fromStop,
+            overrideToStop: result.toStop,
+          ),
+        ),
+      );
+    } catch (e) {
+      print('❌ Error creating trip selection: $e');
+      // Fallback: navigate with just route code
+      if (!mounted) return;
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => CommuterMapPage(
+            initialRouteId: result.route.code,
+          ),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    if (_isLoadingBundle) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('Loading route data...'),
+          ],
+        ),
+      );
+    }
+
+    if (_bundle == null || _uniqueStops.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error_outline, size: 64, color: colorScheme.error),
+            const SizedBox(height: 16),
+            Text(
+              _errorMessage ?? 'No route data available',
+              style: textTheme.bodyLarge?.copyWith(color: colorScheme.error),
+            ),
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed: _loadRouteDataBundle,
+              child: const Text('Retry'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Instructions
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: colorScheme.primaryContainer.withOpacity(0.3),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: colorScheme.primary.withOpacity(0.3)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline, color: colorScheme.primary),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Select your starting stop and destination to find routes',
+                    style: textTheme.bodyMedium,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          // From Stop Label with "Use Current Location" button
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'From Stop',
+                style: textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              InkWell(
+                onTap: _detectingLocation ? null : _useCurrentLocationAsFrom,
+                borderRadius: BorderRadius.circular(20),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: colorScheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_detectingLocation)
+                        SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: colorScheme.primary,
+                          ),
+                        )
+                      else
+                        Icon(
+                          Icons.my_location,
+                          size: 16,
+                          color: colorScheme.primary,
+                        ),
+                      const SizedBox(width: 4),
+                      Text(
+                        _detectingLocation ? 'Detecting...' : 'Use Current Location',
+                        style: textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w500,
+                          color: colorScheme.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            value: _fromStopName,
+            hint: Text('Select starting stop', style: textTheme.bodyMedium),
+            decoration: InputDecoration(
+              prefixIcon: const Icon(Icons.trip_origin),
+              filled: true,
+              fillColor: colorScheme.surface,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 10,
+              ),
+            ),
+            isExpanded: true,
+            items: _uniqueStops.map((stop) {
+              return DropdownMenuItem<String>(
+                value: stop.name,
+                child: Text(
+                  stop.name,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              );
+            }).toList(),
+            onChanged: (String? value) {
+              setState(() {
+                _fromStopName = value;
+                _errorMessage = null;
+                _results = [];
+              });
+            },
+          ),
+          const SizedBox(height: 20),
+
+          // To Stop Dropdown
+          Text(
+            'To Stop',
+            style: textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            value: _toStopName,
+            hint: Text('Select destination stop', style: textTheme.bodyMedium),
+            decoration: InputDecoration(
+              prefixIcon: const Icon(Icons.location_on),
+              filled: true,
+              fillColor: colorScheme.surface,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 10,
+              ),
+            ),
+            isExpanded: true,
+            items: _uniqueStops.map((stop) {
+              return DropdownMenuItem<String>(
+                value: stop.name,
+                child: Text(
+                  stop.name,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              );
+            }).toList(),
+            onChanged: (String? value) {
+              setState(() {
+                _toStopName = value;
+                _errorMessage = null;
+                _results = [];
+              });
+            },
+          ),
+          const SizedBox(height: 24),
+
+          // Search Button
+          ElevatedButton(
+            onPressed: _isSearching ? null : _searchRoutes,
+            style: ElevatedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            child: _isSearching
+                ? const SizedBox(
+                    height: 20,
+                    width: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Text(
+                    'Search Routes',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+          ),
+          const SizedBox(height: 24),
+
+          // Error Message
+          if (_errorMessage != null) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: colorScheme.errorContainer,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: colorScheme.error.withOpacity(0.3)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.error_outline, color: colorScheme.error),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      _errorMessage!,
+                      style: textTheme.bodyMedium?.copyWith(
+                        color: colorScheme.onErrorContainer,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+
+          // Search Results
+          if (_results.isNotEmpty) ...[
+            Text(
+              'Found ${_results.length} route(s)',
+              style: textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 12),
+            ..._results.map((result) => Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: RouteResultCard(
+                    result: result,
+                    onTap: () => _navigateToMap(result),
+                    onReportIssue: () => _navigateToReport(result),
+                  ),
+                )),
+          ],
         ],
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
+    );
+  }
+}
+
+/// Card widget for displaying a route search result.
+/// Theme-aware and supports both light and dark modes.
+class RouteResultCard extends StatelessWidget {
+  final RouteSearchResult result;
+  final VoidCallback onTap;
+  final VoidCallback? onReportIssue;
+
+  const RouteResultCard({
+    super.key,
+    required this.result,
+    required this.onTap,
+    this.onReportIssue,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    // Get intermediate stops (excluding from and to)
+    final intermediateOnly = result.intermediateStops.length > 2
+        ? result.intermediateStops.sublist(1, result.intermediateStops.length - 1)
+        : <StopModel>[];
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        decoration: BoxDecoration(
+          color: colorScheme.surface,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 8,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Route Header
+            // Route Header: Code chip + Main title (From → To)
             Row(
               children: [
                 Container(
@@ -689,344 +742,100 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                     vertical: 6,
                   ),
                   decoration: BoxDecoration(
-                    color: Theme.of(context).primaryColor,
+                    color: colorScheme.primary,
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
                     result.route.code,
-                    style: const TextStyle(
-                      fontSize: 16,
+                    style: textTheme.bodyLarge?.copyWith(
                       fontWeight: FontWeight.bold,
-                      color: Colors.white,
+                      color: colorScheme.onPrimary,
                     ),
                   ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    result.route.name,
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: textPrimary,
+                    '${result.fromStop.name} → ${result.toStop.name}',
+                    style: textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
                     ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 16),
-            const Divider(),
-            const SizedBox(height: 16),
-
-            // From/To Stop Info
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(Icons.trip_origin, size: 16, color: textSecondary),
-                          const SizedBox(width: 6),
-                          Text(
-                            'From',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: textSecondary,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        result.fromStop.name,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: textPrimary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(
-                  Icons.arrow_forward,
-                  color: Theme.of(context).primaryColor,
-                  size: 24,
-                ),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          Text(
-                            'To',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: textSecondary,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          Icon(Icons.location_on, size: 16, color: textSecondary),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        result.toStop.name,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: textPrimary,
-                        ),
-                        textAlign: TextAlign.end,
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+            const SizedBox(height: 8),
+            // Route name as subtitle (muted)
+            Text(
+              result.route.name,
+              style: textTheme.bodyMedium?.copyWith(
+                color: colorScheme.onSurface.withOpacity(0.7),
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
-            const SizedBox(height: 16),
 
-            // Fare
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.green.shade50,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.green.shade200),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.payment, size: 20, color: Colors.green.shade700),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Fare: RM ${result.route.baseFare.toStringAsFixed(2)}',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.green.shade700,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 20),
-
-            // Buses and Schedules
-            if (result.busesWithSchedules.isEmpty) ...[
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.orange.shade50,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.orange.shade200),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.info_outline, color: Colors.orange.shade700),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        'No active buses or schedules available for this route.',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.orange.shade900,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ] else ...[
+            // Intermediate stops (if any)
+            if (intermediateOnly.isNotEmpty) ...[
+              const SizedBox(height: 12),
               Text(
-                'Available Buses',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: textPrimary,
-                ),
-              ),
-              const SizedBox(height: 12),
-              ...result.busesWithSchedules.map((busWithSchedules) {
-                return _buildBusScheduleCard(result, busWithSchedules);
-              }).toList(),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildBusScheduleCard(RouteSearchResult result, BusWithSchedules busWithSchedules) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final cardColor = isDark ? const Color(0xFF1E1E1E) : Colors.white;
-    final textPrimary = isDark ? Colors.white : Colors.black87;
-    final textSecondary = isDark ? Colors.white70 : Colors.grey.shade700;
-
-    // Get departure times as a comma-separated string
-    final departureTimes = busWithSchedules.schedules
-        .map((schedule) => schedule.departureTime)
-        .join(', ');
-    
-    // Check if this bus is selected
-    final isSelected = _selectedBusForTracking?.id == busWithSchedules.bus.id;
-
-    return InkWell(
-      onTap: () {
-        setState(() {
-          _selectedBusForTracking = busWithSchedules.bus;
-          _selectedRouteResult = result;
-        });
-      },
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isSelected 
-              ? Theme.of(context).primaryColor.withOpacity(0.1)
-              : cardColor,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected 
-                ? Theme.of(context).primaryColor
-                : Colors.grey[300]!,
-            width: isSelected ? 2 : 1,
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.directions_bus,
-                  color: Theme.of(context).primaryColor,
-                  size: 24,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Bus ${busWithSchedules.bus.code}',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: textPrimary,
-                        ),
-                      ),
-                      Text(
-                        busWithSchedules.bus.plateNo,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: textSecondary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(
-                  Icons.chevron_right,
-                  color: textSecondary,
-                  size: 24,
-                ),
-              ],
-            ),
-            if (busWithSchedules.schedules.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              const Divider(height: 1),
-              const SizedBox(height: 12),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.access_time, size: 16, color: textSecondary),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Departure Times',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: textSecondary,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          departureTimes.isNotEmpty
-                              ? departureTimes
-                              : 'No schedules available',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: textPrimary,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ] else ...[
-              const SizedBox(height: 8),
-              Text(
-                'No schedules available',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: textSecondary,
+                'Via: ${intermediateOnly.map((s) => s.name).join(', ')}',
+                style: textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurface.withOpacity(0.7),
                   fontStyle: FontStyle.italic,
                 ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
               ),
             ],
-            const SizedBox(height: 8),
-            if (isSelected) ...[
-              Row(
-                children: [
-                  Icon(
-                    Icons.check_circle,
-                    color: Theme.of(context).primaryColor,
-                    size: 16,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    'Selected',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Theme.of(context).primaryColor,
-                      fontWeight: FontWeight.bold,
+
+            const SizedBox(height: 16),
+            // Action buttons row
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                // Report Issue button
+                if (onReportIssue != null)
+                  TextButton.icon(
+                    onPressed: onReportIssue,
+                    icon: Icon(
+                      Icons.report_problem,
+                      size: 16,
+                      color: colorScheme.error,
                     ),
+                    label: Text(
+                      'Report Issue',
+                      style: textTheme.bodySmall?.copyWith(
+                        color: colorScheme.error,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  )
+                else
+                  const SizedBox.shrink(),
+                // Tap to view on map
+                TextButton.icon(
+                  onPressed: onTap,
+                  icon: Icon(
+                    Icons.chevron_right,
+                    size: 16,
+                    color: colorScheme.primary,
                   ),
-                ],
-              ),
-            ] else ...[
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  Text(
-                    'Tap to select',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Theme.of(context).primaryColor,
+                  label: Text(
+                    'View on map',
+                    style: textTheme.bodySmall?.copyWith(
+                      color: colorScheme.primary,
                       fontWeight: FontWeight.w500,
                     ),
                   ),
-                ],
-              ),
-            ],
+                ),
+              ],
+            ),
           ],
         ),
       ),
     );
   }
 }
-

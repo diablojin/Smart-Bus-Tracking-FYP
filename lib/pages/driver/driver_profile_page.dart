@@ -13,7 +13,6 @@ class DriverProfilePage extends StatefulWidget {
 }
 
 class _DriverProfilePageState extends State<DriverProfilePage> {
-  bool _notificationsEnabled = true;
   bool _locationServicesEnabled = true;
   bool _darkModeEnabled = AppTheme.isDarkMode;
 
@@ -209,19 +208,6 @@ class _DriverProfilePageState extends State<DriverProfilePage> {
             ),
             child: Column(
               children: [
-                _SettingsTile(
-                  icon: Icons.notifications_outlined,
-                  iconColor: Theme.of(context).colorScheme.primary,
-                  title: 'Notifications',
-                  subtitle: 'Manage notification preferences',
-                  trailing: Switch(
-                    value: _notificationsEnabled,
-                    onChanged: (value) {
-                      setState(() => _notificationsEnabled = value);
-                    },
-                  ),
-                ),
-                const Divider(height: 1, indent: 56),
                 _SettingsTile(
                   icon: Icons.location_on_outlined,
                   iconColor: Theme.of(context).colorScheme.primary,

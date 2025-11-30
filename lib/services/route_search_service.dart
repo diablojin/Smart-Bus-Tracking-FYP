@@ -1,6 +1,118 @@
 import '../config/supabase_client.dart';
+import '../models/route_model.dart';
+import '../models/stop_model.dart';
+import '../models/route_stop_model.dart';
 
-// Model Classes
+/// Bundle containing all route data loaded from Supabase.
+/// Provides efficient lookup maps for route search operations.
+class RouteDataBundle {
+  final List<RouteModel> routes;
+  final List<StopModel> stops;
+  final Map<int, List<RouteStopModel>> routeStopsByRouteId;
+  final Map<int, RouteModel> routesById;
+  final Map<int, StopModel> stopsById;
+  // Stops grouped by route_id, ordered by sequence_index (from route_stops.seq)
+  final Map<int, List<StopModel>> stopsByRouteId;
+
+  RouteDataBundle({
+    required this.routes,
+    required this.stops,
+    required this.routeStopsByRouteId,
+    required this.routesById,
+    required this.stopsById,
+    required this.stopsByRouteId,
+  });
+}
+
+/// Result of a route search between two stops.
+class RouteSearchResult {
+  final RouteModel route;
+  final StopModel fromStop;
+  final StopModel toStop;
+  final List<StopModel> intermediateStops;
+
+  RouteSearchResult({
+    required this.route,
+    required this.fromStop,
+    required this.toStop,
+    required this.intermediateStops,
+  });
+}
+
+/// Bus information model (used by CommuterMapPage for tracking).
+class BusInfo {
+  final int id;
+  final int routeId;
+  final String plateNo;
+  final String code;
+  final bool isActive;
+
+  BusInfo({
+    required this.id,
+    required this.routeId,
+    required this.plateNo,
+    required this.code,
+    required this.isActive,
+  });
+
+  factory BusInfo.fromJson(Map<String, dynamic> json) {
+    return BusInfo(
+      id: json['id'] as int,
+      routeId: json['route_id'] as int,
+      plateNo: json['plate_no'] as String,
+      code: json['code'] as String,
+      isActive: json['is_active'] as bool? ?? true,
+    );
+  }
+}
+
+/// Trip selection model (used by CommuterMapPage for navigation).
+/// Note: This uses the old Stop model structure for compatibility with CommuterMapPage.
+class TripSelection {
+  final RouteInfo route;
+  final Stop fromStop;
+  final Stop toStop;
+  final BusInfo bus;
+
+  TripSelection({
+    required this.route,
+    required this.fromStop,
+    required this.toStop,
+    required this.bus,
+  });
+}
+
+/// Route information model (legacy compatibility).
+class RouteInfo {
+  final int id;
+  final String code;
+  final String name;
+  final double baseFare;
+  final String? description;
+  final bool isActive;
+
+  RouteInfo({
+    required this.id,
+    required this.code,
+    required this.name,
+    required this.baseFare,
+    this.description,
+    required this.isActive,
+  });
+
+  factory RouteInfo.fromJson(Map<String, dynamic> json) {
+    return RouteInfo(
+      id: json['id'] as int,
+      code: json['code'] as String,
+      name: json['name'] as String,
+      baseFare: (json['base_fare'] as num?)?.toDouble() ?? 0.0,
+      description: json['description'] as String?,
+      isActive: json['is_active'] as bool? ?? true,
+    );
+  }
+}
+
+/// Stop model (legacy compatibility for CommuterMapPage).
 class Stop {
   final int id;
   final int routeId;
@@ -43,7 +155,7 @@ class Stop {
       latitude: (map['latitude'] as num).toDouble(),
       longitude: (map['longitude'] as num).toDouble(),
       sequenceIndex: map['sequence_index'] as int,
-      routeCode: null, // for simple stop queries
+      routeCode: null,
     );
   }
 
@@ -51,272 +163,183 @@ class Stop {
   String toString() => name;
 }
 
-class RouteInfo {
-  final int id;
-  final String code;
-  final String name;
-  final double baseFare;
-  final String? description;
-  final bool isActive;
-
-  RouteInfo({
-    required this.id,
-    required this.code,
-    required this.name,
-    required this.baseFare,
-    this.description,
-    required this.isActive,
-  });
-
-  factory RouteInfo.fromJson(Map<String, dynamic> json) {
-    return RouteInfo(
-      id: json['id'] as int,
-      code: json['code'] as String,
-      name: json['name'] as String,
-      baseFare: (json['base_fare'] as num).toDouble(),
-      description: json['description'] as String?,
-      isActive: json['is_active'] as bool? ?? true,
-    );
-  }
-}
-
-class BusInfo {
-  final int id;
-  final int routeId;
-  final String plateNo;
-  final String code;
-  final bool isActive;
-
-  BusInfo({
-    required this.id,
-    required this.routeId,
-    required this.plateNo,
-    required this.code,
-    required this.isActive,
-  });
-
-  factory BusInfo.fromJson(Map<String, dynamic> json) {
-    return BusInfo(
-      id: json['id'] as int,
-      routeId: json['route_id'] as int,
-      plateNo: json['plate_no'] as String,
-      code: json['code'] as String,
-      isActive: json['is_active'] as bool? ?? true,
-    );
-  }
-}
-
-class ScheduleInfo {
-  final int id;
-  final int busId;
-  final String departureTime;
-  final String arrivalTime;
-  final List<String> daysOfWeek;
-  final bool isActive;
-
-  ScheduleInfo({
-    required this.id,
-    required this.busId,
-    required this.departureTime,
-    required this.arrivalTime,
-    required this.daysOfWeek,
-    required this.isActive,
-  });
-
-  factory ScheduleInfo.fromJson(Map<String, dynamic> json) {
-    // Parse days_of_week which is stored as a PostgreSQL array
-    List<String> days = [];
-    if (json['days_of_week'] != null) {
-      if (json['days_of_week'] is List) {
-        days = (json['days_of_week'] as List).map((e) => e.toString()).toList();
-      }
-    }
-
-    return ScheduleInfo(
-      id: json['id'] as int,
-      busId: json['bus_id'] as int,
-      departureTime: json['departure_time'] as String,
-      arrivalTime: json['arrival_time'] as String,
-      daysOfWeek: days,
-      isActive: json['is_active'] as bool? ?? true,
-    );
-  }
-}
-
-class BusWithSchedules {
-  final BusInfo bus;
-  final List<ScheduleInfo> schedules;
-
-  BusWithSchedules({
-    required this.bus,
-    required this.schedules,
-  });
-}
-
-class RouteSearchResult {
-  final RouteInfo route;
-  final Stop fromStop;
-  final Stop toStop;
-  final List<BusWithSchedules> busesWithSchedules;
-
-  RouteSearchResult({
-    required this.route,
-    required this.fromStop,
-    required this.toStop,
-    required this.busesWithSchedules,
-  });
-}
-
-class TripSelection {
-  final RouteInfo route;
-  final Stop fromStop;
-  final Stop toStop;
-  final BusInfo bus;
-
-  TripSelection({
-    required this.route,
-    required this.fromStop,
-    required this.toStop,
-    required this.bus,
-  });
-}
-
-// Service Class
+/// Service for loading route data and searching routes.
 class RouteSearchService {
-  /// Get all stops ordered by name
-  static Future<List<Stop>> getAllStops() async {
+  /// Loads all route data from Supabase into a bundle.
+  /// 
+  /// Fetches:
+  /// - Active routes (is_active = true)
+  /// - All stops
+  /// - All route_stops relationships
+  /// 
+  /// Returns a RouteDataBundle with organized data and lookup maps.
+  static Future<RouteDataBundle> loadRouteDataBundle() async {
     try {
-      final response = await supabase
-          .from('stops')
-          .select('id, route_id, name, latitude, longitude, sequence_index, routes (code)')
-          .order('name');
-
-      final rows = response as List<dynamic>;
-
-      return rows.map((raw) {
-        final map = raw as Map<String, dynamic>;
-        final routeMap = map['routes'] as Map<String, dynamic>?;
-        final routeCode = routeMap != null ? routeMap['code'] as String? : null;
-
-        return Stop(
-          id: map['id'] as int,
-          routeId: map['route_id'] as int,
-          name: map['name'] as String,
-          latitude: (map['latitude'] as num).toDouble(),
-          longitude: (map['longitude'] as num).toDouble(),
-          sequenceIndex: map['sequence_index'] as int,
-          routeCode: routeCode,
-        );
-      }).toList();
-    } catch (e) {
-      print('Error fetching stops: $e');
-      rethrow;
-    }
-  }
-
-  /// Search for a route between two stops
-  /// Returns null if no direct route exists
-  static Future<RouteSearchResult?> searchRoute({
-    required int fromStopId,
-    required int toStopId,
-  }) async {
-    try {
-      // 1. Fetch both stops
-      final stopsResponse = await supabase
-          .from('stops')
-          .select()
-          .inFilter('id', [fromStopId, toStopId]);
-
-      final stops = (stopsResponse as List)
-          .map((json) => Stop.fromJson(json))
-          .toList();
-
-      if (stops.length != 2) {
-        return null; // One or both stops not found
-      }
-
-      // Find which is from and which is to
-      final fromStop = stops.firstWhere((s) => s.id == fromStopId);
-      final toStop = stops.firstWhere((s) => s.id == toStopId);
-
-      // 2. Check if they share the same route_id
-      if (fromStop.routeId != toStop.routeId) {
-        return null; // No direct route
-      }
-
-      // 3. Allow both directions on the same route
-      // Do NOT reject based on sequenceIndex anymore.
-      // We want to allow both directions along the same route.
-      // if (fromStop.sequenceIndex >= toStop.sequenceIndex) {
-      //   return null;
-      // }
-
-      // 4. Fetch the route information
-      final routeResponse = await supabase
+      // 1. Fetch active routes
+      final routesResponse = await supabase
           .from('routes')
           .select()
-          .eq('id', fromStop.routeId)
-          .single();
-
-      final route = RouteInfo.fromJson(routeResponse);
-
-      // 5. Fetch all active buses for this route
-      final busesResponse = await supabase
-          .from('buses')
-          .select()
-          .eq('route_id', route.id)
           .eq('is_active', true);
 
-      final buses = (busesResponse as List)
-          .map((json) => BusInfo.fromJson(json))
-          .toList();
-
-      if (buses.isEmpty) {
-        // No active buses, but route exists
-        return RouteSearchResult(
-          route: route,
-          fromStop: fromStop,
-          toStop: toStop,
-          busesWithSchedules: [],
-        );
+      if (routesResponse.isNotEmpty) {
+        final sampleRow = Map<String, dynamic>.from(routesResponse[0] as Map);
+        print('📊 Sample route row keys: ${sampleRow.keys.toList()}');
       }
 
-      // 6. Fetch all active schedules for these buses
-      final busIds = buses.map((b) => b.id).toList();
-      final schedulesResponse = await supabase
-          .from('schedules')
+      final routes = (routesResponse as List)
+          .map((row) {
+            try {
+              return RouteModel.fromMap(row as Map<String, dynamic>);
+            } catch (e) {
+              print('❌ Error parsing route: $e');
+              print('   Row data: $row');
+              print('   Row keys: ${(row as Map<String, dynamic>).keys.toList()}');
+              return null;
+            }
+          })
+          .whereType<RouteModel>()
+          .toList();
+
+      // 2. Fetch all stops
+      final stopsResponse = await supabase
+          .from('stops')
+          .select();
+
+      if (stopsResponse.isNotEmpty) {
+        final sampleRow = Map<String, dynamic>.from(stopsResponse[0] as Map);
+        print('📊 Sample stop row keys: ${sampleRow.keys.toList()}');
+      }
+
+      final stops = (stopsResponse as List)
+          .map((row) {
+            try {
+              return StopModel.fromMap(row as Map<String, dynamic>);
+            } catch (e) {
+              print('❌ Error parsing stop: $e');
+              print('   Row data: $row');
+              print('   Row keys: ${(row as Map<String, dynamic>).keys.toList()}');
+              return null;
+            }
+          })
+          .whereType<StopModel>()
+          .toList();
+
+      // 3. Fetch all route_stops
+      final routeStopsResponse = await supabase
+          .from('route_stops')
           .select()
-          .inFilter('bus_id', busIds)
-          .eq('is_active', true)
-          .order('departure_time', ascending: true);
+          .order('route_id')
+          .order('seq');
 
-      final schedules = (schedulesResponse as List)
-          .map((json) => ScheduleInfo.fromJson(json))
+      final routeStops = (routeStopsResponse as List)
+          .map((row) {
+            try {
+              return RouteStopModel.fromMap(row as Map<String, dynamic>);
+            } catch (e) {
+              print('Error parsing route_stop: $e, row: $row');
+              return null;
+            }
+          })
+          .whereType<RouteStopModel>()
           .toList();
 
-      // 7. Group schedules by bus
-      final List<BusWithSchedules> busesWithSchedules = [];
-      for (final bus in buses) {
-        final busSchedules = schedules
-            .where((s) => s.busId == bus.id)
-            .toList();
-        
-        busesWithSchedules.add(BusWithSchedules(
-          bus: bus,
-          schedules: busSchedules,
-        ));
+      // 4. Group route_stops by route_id
+      final Map<int, List<RouteStopModel>> routeStopsByRouteId = {};
+      for (final routeStop in routeStops) {
+        routeStopsByRouteId.putIfAbsent(routeStop.routeId, () => []).add(routeStop);
       }
 
-      return RouteSearchResult(
-        route: route,
-        fromStop: fromStop,
-        toStop: toStop,
-        busesWithSchedules: busesWithSchedules,
+      // Ensure each route's stops are sorted by seq
+      for (final entry in routeStopsByRouteId.entries) {
+        entry.value.sort((a, b) => a.seq.compareTo(b.seq));
+      }
+
+      // 5. Build lookup maps
+      final Map<int, RouteModel> routesById = {};
+      for (final route in routes) {
+        routesById[route.id] = route;
+      }
+
+      final Map<int, StopModel> stopsById = {};
+      for (final stop in stops) {
+        stopsById[stop.id] = stop;
+      }
+
+      // 6. Build stopsByRouteId: group stops by route_id, ordered by sequence_index (seq)
+      final Map<int, List<StopModel>> stopsByRouteId = {};
+      for (final entry in routeStopsByRouteId.entries) {
+        final routeId = entry.key;
+        final routeStopList = entry.value; // Already sorted by seq
+        final stopList = routeStopList
+            .map((rs) => stopsById[rs.stopId])
+            .whereType<StopModel>()
+            .toList();
+        stopsByRouteId[routeId] = stopList;
+      }
+
+      print('✅ Loaded ${routes.length} routes, ${stops.length} stops, ${routeStops.length} route_stops');
+      
+      return RouteDataBundle(
+        routes: routes,
+        stops: stops,
+        routeStopsByRouteId: routeStopsByRouteId,
+        routesById: routesById,
+        stopsById: stopsById,
+        stopsByRouteId: stopsByRouteId,
       );
-    } catch (e) {
-      print('Error searching route: $e');
+    } catch (e, stackTrace) {
+      print('❌ Error loading route data bundle: $e');
+      print('Stack trace: $stackTrace');
       rethrow;
     }
   }
-}
 
+  /// Searches for all direct routes that include both stops by name (two-way routes).
+  /// 
+  /// Returns a list of RouteSearchResult objects, one for each matching route.
+  static List<RouteSearchResult> searchRoutes({
+    required RouteDataBundle bundle,
+    required String fromStopName,
+    required String toStopName,
+  }) {
+    if (fromStopName == toStopName) {
+      return [];
+    }
+
+    final List<RouteSearchResult> matches = [];
+
+    bundle.stopsByRouteId.forEach((routeId, stopList) {
+      // stopList is already ordered by sequence_index (from route_stops.seq)
+      // Find indices where stop names match
+      final fromIndex = stopList.indexWhere((s) => s.name == fromStopName);
+      final toIndex = stopList.indexWhere((s) => s.name == toStopName);
+
+      // Check if both stops exist on this route (direction doesn't matter - two-way routes)
+      if (fromIndex != -1 && toIndex != -1 && fromIndex != toIndex) {
+        final route = bundle.routesById[routeId];
+        if (route == null) return; // Skip if route not found
+
+        // Get intermediate stops (including from and to)
+        // Handle both directions by using min/max for sublist bounds
+        final startIndex = fromIndex < toIndex ? fromIndex : toIndex;
+        final endIndex = fromIndex < toIndex ? toIndex : fromIndex;
+        final intermediate = stopList.sublist(startIndex, endIndex + 1);
+
+        // Get the actual from/to stop models (preserve user's selection order)
+        final fromStopModel = stopList[fromIndex];
+        final toStopModel = stopList[toIndex];
+
+        if (intermediate.length >= 2) {
+          matches.add(RouteSearchResult(
+            route: route,
+            fromStop: fromStopModel,
+            toStop: toStopModel,
+            intermediateStops: intermediate,
+          ));
+        }
+      }
+    });
+
+    return matches;
+  }
+}

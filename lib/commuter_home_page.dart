@@ -4,7 +4,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'app_theme.dart';
 import 'auth_page.dart';
 import 'commuter_route_page.dart';
-import 'pages/commuter/report_page.dart';
 import 'models/announcement.dart';
 import 'services/announcement_service.dart';
 
@@ -461,7 +460,6 @@ class _ProfileTab extends StatefulWidget {
 class _ProfileTabState extends State<_ProfileTab> {
   String? _email;
 
-  bool _notificationsEnabled = true;
   bool _darkModeEnabled = AppTheme.isDarkMode;
 
   @override
@@ -507,13 +505,6 @@ class _ProfileTabState extends State<_ProfileTab> {
     );
   }
 
-  void _onTapReportIssue() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => const ReportIssuePage(),
-      ),
-    );
-  }
 
   void _onTapHelpSupport() {
     // TODO: Navigate to help & support page
@@ -522,12 +513,6 @@ class _ProfileTabState extends State<_ProfileTab> {
     );
   }
 
-  void _onToggleNotifications(bool value) {
-    setState(() {
-      _notificationsEnabled = value;
-    });
-    // TODO: Persist this to Supabase or local storage if needed
-  }
 
   void _onToggleDarkMode(bool value) {
     setState(() {
@@ -595,14 +580,6 @@ class _ProfileTabState extends State<_ProfileTab> {
               ),
               const SizedBox(height: 8),
               _ProfileTile(
-                icon: Icons.report_gmailerrorred_outlined,
-                iconColor: colorScheme.primary,
-                title: 'Report an Issue',
-                subtitle: 'Let us know about any problems.',
-                onTap: _onTapReportIssue,
-              ),
-              const SizedBox(height: 8),
-              _ProfileTile(
                 icon: Icons.help_outline,
                 iconColor: colorScheme.primary,
                 title: 'Help & Support',
@@ -619,15 +596,6 @@ class _ProfileTabState extends State<_ProfileTab> {
                 fontWeight: FontWeight.bold,
                 color: colorScheme.onSurface,
               ),
-            ),
-            const SizedBox(height: 8),
-            _SwitchTile(
-              icon: Icons.notifications_active_outlined,
-              iconColor: colorScheme.primary,
-              title: 'Notifications',
-              subtitle: 'Get alerts for your routes.',
-              value: _notificationsEnabled,
-              onChanged: _onToggleNotifications,
             ),
             const SizedBox(height: 8),
             _SwitchTile(

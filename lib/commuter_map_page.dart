@@ -11,12 +11,22 @@ import 'services/directions_service.dart';
 import 'services/route_search_service.dart';
 import 'keys/directions_api_key.dart';
 import 'config/supabase_client.dart';
+import 'models/stop_model.dart';
+import 'pages/commuter/report_page.dart';
 
 class CommuterMapPage extends StatefulWidget {
   final String? initialRouteId; // Optional: Pre-select a specific route (legacy)
   final TripSelection? tripSelection; // New: Selected trip from search
+  final StopModel? overrideFromStop; // Optional: Override from stop for header display
+  final StopModel? overrideToStop; // Optional: Override to stop for header display
   
-  const CommuterMapPage({super.key, this.initialRouteId, this.tripSelection});
+  const CommuterMapPage({
+    super.key, 
+    this.initialRouteId, 
+    this.tripSelection,
+    this.overrideFromStop,
+    this.overrideToStop,
+  });
 
   @override
   State<CommuterMapPage> createState() => _CommuterMapPageState();
@@ -47,6 +57,9 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
 
   // Destination point for ETA calculation (will be dynamic based on route)
   LatLng? _destination;
+
+  // User's current location
+  LatLng? _userLatLng;
 
   // Custom bus icons (single icon or multiple colored icons)
   BitmapDescriptor? _busIcon; // Default/green icon for "In Service"
@@ -331,7 +344,32 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
           _routeBusStatus.putIfAbsent(routeId, () => {});
 
           _routeBusPositions[routeId]![busId] = pos;
-          _routeLastUpdates[routeId]![busId] = location.timestamp;
+          // Normalize timestamp: if it's in the future, use current time
+          // But preserve existing normalized timestamps to allow proper incrementing
+          final now = DateTime.now();
+          final existingTimestamp = _routeLastUpdates[routeId]?[busId];
+          
+          DateTime normalizedTimestamp;
+          if (location.timestamp.isAfter(now)) {
+            // Timestamp is in the future - normalize it
+            if (existingTimestamp == null) {
+              // First time seeing this bus - normalize to now
+              normalizedTimestamp = now;
+            } else if (existingTimestamp.isBefore(now)) {
+              // We already have a normalized timestamp that's in the past
+              // Keep it and let it age naturally (don't reset to now)
+              // This allows the "last updated" time to increment properly
+              normalizedTimestamp = existingTimestamp;
+            } else {
+              // Existing timestamp is also in future - update to current now
+              normalizedTimestamp = now;
+            }
+          } else {
+            // Timestamp is in the past - use it normally
+            normalizedTimestamp = location.timestamp;
+          }
+          
+          _routeLastUpdates[routeId]![busId] = normalizedTimestamp;
           _routeBusStatus[routeId]![busId] = status;
         });
 
@@ -391,6 +429,76 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
         15.0,
       ),
     );
+  }
+
+  /// Get user's current location and recenter map
+  Future<void> _onGetUserLocation() async {
+    try {
+      // Check if location services are enabled
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please enable location services (GPS).'),
+          ),
+        );
+        return;
+      }
+
+      // Check location permission
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Location permission is required to show your location.'),
+            ),
+          );
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Location permission is permanently denied. Please enable it in settings.'),
+          ),
+        );
+        return;
+      }
+
+      // Get current position
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      if (!mounted) return;
+
+      final userLocation = LatLng(position.latitude, position.longitude);
+      
+      setState(() {
+        _userLatLng = userLocation;
+      });
+
+      // Recenter camera on user location
+      if (_mapController != null) {
+        _mapController!.animateCamera(
+          CameraUpdate.newLatLngZoom(userLocation, 15.0),
+        );
+      }
+    } catch (e) {
+      print('Error getting user location: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to get your location: $e'),
+        ),
+      );
+    }
   }
   
   void _recenterOnSelectedBus() {
@@ -539,6 +647,7 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
   /// Format last update timestamp for display
   String _formatLastUpdate(DateTime lastUpdate) {
     final now = DateTime.now();
+    // Calculate elapsed time (timestamps are normalized when stored, so this should always be positive)
     final difference = now.difference(lastUpdate);
     
     if (difference.inSeconds < 60) {
@@ -550,6 +659,58 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
     } else {
       // Format as date and time
       return '${lastUpdate.day}/${lastUpdate.month} ${lastUpdate.hour}:${lastUpdate.minute.toString().padLeft(2, '0')}';
+    }
+  }
+
+  /// Navigate to report page with current route and bus
+  Future<void> _navigateToReport() async {
+    try {
+      // Fetch route info from route code
+      final routeResponse = await supabase
+          .from('routes')
+          .select('id, code, name')
+          .eq('code', _selectedRouteCode)
+          .maybeSingle();
+
+      if (routeResponse == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Route not found'),
+          ),
+        );
+        return;
+      }
+
+      final routeId = routeResponse['id'].toString();
+      final routeName = routeResponse['name'] as String? ?? routeResponse['code'] as String;
+      
+      String? busId;
+      String? busName;
+      if (_selectedBus != null) {
+        busId = _selectedBus!.id.toString();
+        busName = 'Bus ${_selectedBus!.code} (${_selectedBus!.plateNo})';
+      }
+
+      if (!mounted) return;
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ReportIssuePage(
+            routeId: routeId,
+            routeName: routeName,
+            busId: busId,
+            busName: busName,
+          ),
+        ),
+      );
+    } catch (e) {
+      print('Error navigating to report: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error opening report page: $e'),
+        ),
+      );
     }
   }
 
@@ -569,8 +730,9 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
       // Use trip selection data
       routeLabel = widget.tripSelection!.route.code;
       routeName = widget.tripSelection!.route.name;
-      routeOrigin = widget.tripSelection!.fromStop.name;
-      routeDestination = widget.tripSelection!.toStop.name;
+      // Use override stops if provided, otherwise use trip selection stops
+      routeOrigin = widget.overrideFromStop?.name ?? widget.tripSelection!.fromStop.name;
+      routeDestination = widget.overrideToStop?.name ?? widget.tripSelection!.toStop.name;
       routeOriginCoords = LatLng(
         widget.tripSelection!.fromStop.latitude,
         widget.tripSelection!.fromStop.longitude,
@@ -589,8 +751,9 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
       );
       routeLabel = currentRoute.code; // Use code as the route label
       routeName = currentRoute.name;
-      routeOrigin = currentRoute.origin;
-      routeDestination = currentRoute.destination;
+      // Use override stops if provided, otherwise use route model terminals
+      routeOrigin = widget.overrideFromStop?.name ?? currentRoute.origin;
+      routeDestination = widget.overrideToStop?.name ?? currentRoute.destination;
       routeOriginCoords = currentRoute.originCoords;
       routeDestinationCoords = currentRoute.destinationCoords;
       routeFare = currentRoute.fare;
@@ -728,6 +891,21 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
       print('🗺️ NO MARKERS - _currentPolylinePoints is empty, skipping origin/destination markers');
     }
 
+    // Add user location marker if available
+    if (_userLatLng != null) {
+      markers.add(
+        Marker(
+          markerId: const MarkerId('user_location'),
+          position: _userLatLng!,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+          infoWindow: const InfoWindow(
+            title: 'Your Location',
+            snippet: 'Current position',
+          ),
+        ),
+      );
+    }
+
     // Get data for selected bus
     final selectedBusCode = _selectedBus?.code; // Bus code (e.g. "750-A")
     final selectedPos = selectedBusCode != null ? busesOnRoute[selectedBusCode] : null;
@@ -804,17 +982,30 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
             ),
           ),
 
-          // 3) Floating recenter button (bottom-right above bottom card)
-          if (selectedPos != null && _selectedBus != null)
-            Positioned(
-              right: 16,
-              bottom: 200, // adjust so it sits above bottom card
-              child: FloatingActionButton.small(
-                heroTag: 'recenter_fab',
-                onPressed: _onRecenterPressed,
-                child: const Icon(Icons.my_location),
-              ),
+          // 3) Floating action buttons (bottom-right above bottom card)
+          Positioned(
+            right: 16,
+            bottom: 200, // adjust so it sits above bottom card
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // User location button (always visible)
+                FloatingActionButton.small(
+                  heroTag: 'user_location_fab',
+                  onPressed: _onGetUserLocation,
+                  child: const Icon(Icons.person_pin_circle),
+                ),
+                const SizedBox(height: 12),
+                // Bus recenter button (only when bus is selected)
+                if (selectedPos != null && _selectedBus != null)
+                  FloatingActionButton.small(
+                    heroTag: 'recenter_fab',
+                    onPressed: _onRecenterPressed,
+                    child: const Icon(Icons.my_location),
+                  ),
+              ],
             ),
+          ),
 
           // 4) Bottom card anchored to bottom
           Positioned(
@@ -832,6 +1023,8 @@ class _CommuterMapPageState extends State<CommuterMapPage> {
                       ? 'ETA: Unavailable'
                       : 'ETA: ${_calculateETA(selectedPos)}')
                   : null,
+              routeCode: _selectedRouteCode,
+              onReportIssue: _navigateToReport,
             ),
           ),
         ],
@@ -958,6 +1151,8 @@ class _AnimatedBusBottomCard extends StatelessWidget {
   final String? selectedStatus;
   final DateTime? selectedLastUpdate;
   final String? etaText;
+  final String routeCode;
+  final VoidCallback onReportIssue;
 
   const _AnimatedBusBottomCard({
     required this.selectedBus,
@@ -966,6 +1161,8 @@ class _AnimatedBusBottomCard extends StatelessWidget {
     this.selectedStatus,
     this.selectedLastUpdate,
     this.etaText,
+    required this.routeCode,
+    required this.onReportIssue,
   });
 
   @override
@@ -991,6 +1188,7 @@ class _AnimatedBusBottomCard extends StatelessWidget {
               selectedStatus: selectedStatus,
               selectedLastUpdate: selectedLastUpdate,
               etaText: etaText,
+              onReportIssue: onReportIssue,
             ),
     );
   }
@@ -1004,6 +1202,7 @@ class _BusBottomCard extends StatelessWidget {
   final String? selectedStatus;
   final DateTime? selectedLastUpdate;
   final String? etaText;
+  final VoidCallback onReportIssue;
 
   const _BusBottomCard({
     super.key,
@@ -1013,6 +1212,7 @@ class _BusBottomCard extends StatelessWidget {
     this.selectedStatus,
     this.selectedLastUpdate,
     this.etaText,
+    required this.onReportIssue,
   });
 
   @override
@@ -1046,6 +1246,7 @@ class _BusBottomCard extends StatelessWidget {
     String? lastUpdatedFormatted;
     if (selectedLastUpdate != null) {
       final now = DateTime.now();
+      // Calculate elapsed time (timestamps are normalized when stored, so this should always be positive)
       final difference = now.difference(selectedLastUpdate!);
       
       if (difference.inSeconds < 60) {
@@ -1188,6 +1389,24 @@ class _BusBottomCard extends StatelessWidget {
               ],
             ),
           ],
+          const SizedBox(height: 12),
+          // Report Issue button
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: onReportIssue,
+              icon: const Icon(Icons.report_problem, size: 18),
+              label: const Text('Report Issue'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Theme.of(context).colorScheme.error,
+                side: BorderSide(color: Theme.of(context).colorScheme.error),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );
