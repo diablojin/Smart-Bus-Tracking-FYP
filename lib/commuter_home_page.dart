@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'app_theme.dart';
 import 'auth_page.dart';
 import 'commuter_route_page.dart';
 import 'pages/commuter/report_page.dart';
@@ -8,7 +9,12 @@ import 'pages/commuter/report_page.dart';
 final supabase = Supabase.instance.client;
 
 class CommuterHomePage extends StatefulWidget {
-  const CommuterHomePage({super.key});
+  final bool isGuest;
+  
+  const CommuterHomePage({
+    super.key,
+    this.isGuest = false,
+  });
 
   @override
   State<CommuterHomePage> createState() => _CommuterHomePageState();
@@ -21,7 +27,7 @@ class _CommuterHomePageState extends State<CommuterHomePage> {
   List<Widget> get _pages => [
     const _HomeTab(),              // Index 0: Dashboard
     const CommuterRoutesPage(),    // Index 1: Routes Search
-    const _ProfileTab(),           // Index 2: Profile
+    _ProfileTab(isGuest: widget.isGuest), // Index 2: Profile
   ];
 
   void _onItemTapped(int index) {
@@ -185,6 +191,8 @@ class _HomeTabState extends State<_HomeTab> {
   @override
   Widget build(BuildContext context) {
     final name = _displayName ?? 'Commuter';
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
 
     return SafeArea(
       child: SingleChildScrollView(
@@ -195,17 +203,16 @@ class _HomeTabState extends State<_HomeTab> {
             // Greeting
             Text(
               '${_greetingForNow()}, $name! 👋',
-              style: const TextStyle(
-                fontSize: 24,
+              style: textTheme.headlineSmall?.copyWith(
                 fontWeight: FontWeight.w700,
+                color: colorScheme.onSurface,
               ),
             ),
             const SizedBox(height: 4),
             Text(
               _formattedDate(),
-              style: TextStyle(
-                fontSize: 14,
-                color: Colors.grey.shade700,
+              style: textTheme.bodyMedium?.copyWith(
+                color: colorScheme.onSurface.withOpacity(0.75),
               ),
             ),
             const SizedBox(height: 24),
@@ -223,18 +230,25 @@ class _HomeTabState extends State<_HomeTab> {
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
-                  children: const [
-                    Icon(Icons.directions_bus),
-                    SizedBox(width: 8),
+                  children: [
+                    Icon(
+                      Icons.directions_bus,
+                      color: colorScheme.onPrimary,
+                    ),
+                    const SizedBox(width: 8),
                     Text(
                       'Plan My Trip',
-                      style: TextStyle(
-                        fontSize: 16,
+                      style: textTheme.bodyLarge?.copyWith(
                         fontWeight: FontWeight.w600,
+                        color: colorScheme.onPrimary,
                       ),
                     ),
-                    SizedBox(width: 8),
-                    Icon(Icons.arrow_forward_rounded, size: 20),
+                    const SizedBox(width: 8),
+                    Icon(
+                      Icons.arrow_forward_rounded,
+                      size: 20,
+                      color: colorScheme.onPrimary,
+                    ),
                   ],
                 ),
               ),
@@ -242,11 +256,11 @@ class _HomeTabState extends State<_HomeTab> {
             const SizedBox(height: 24),
 
             // Latest updates header
-            const Text(
+            Text(
               'Latest Updates 🔔',
-              style: TextStyle(
-                fontSize: 18,
+              style: textTheme.titleLarge?.copyWith(
                 fontWeight: FontWeight.w600,
+                color: colorScheme.onSurface,
               ),
             ),
             const SizedBox(height: 12),
@@ -301,9 +315,12 @@ class _UpdateCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: colorScheme.surface,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
@@ -335,17 +352,16 @@ class _UpdateCard extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
-                    fontSize: 15,
+                  style: textTheme.bodyLarge?.copyWith(
                     fontWeight: FontWeight.w600,
+                    color: colorScheme.onSurface,
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   subtitle,
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: Colors.grey.shade700,
+                  style: textTheme.bodyMedium?.copyWith(
+                    color: colorScheme.onSurface.withOpacity(0.75),
                   ),
                 ),
               ],
@@ -358,176 +374,478 @@ class _UpdateCard extends StatelessWidget {
 }
 
 // Profile Tab Content
-class _ProfileTab extends StatelessWidget {
-  const _ProfileTab();
+class _ProfileTab extends StatefulWidget {
+  final bool isGuest;
+  
+  const _ProfileTab({
+    this.isGuest = false,
+  });
+
+  @override
+  State<_ProfileTab> createState() => _ProfileTabState();
+}
+
+class _ProfileTabState extends State<_ProfileTab> {
+  String? _email;
+
+  bool _notificationsEnabled = true;
+  bool _darkModeEnabled = AppTheme.isDarkMode;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUserInfo();
+    // Listen to theme changes to keep switch in sync
+    AppTheme.themeModeNotifier.addListener(_onThemeChanged);
+  }
+
+  @override
+  void dispose() {
+    AppTheme.themeModeNotifier.removeListener(_onThemeChanged);
+    super.dispose();
+  }
+
+  void _onThemeChanged() {
+    if (mounted) {
+      setState(() {
+        _darkModeEnabled = AppTheme.isDarkMode;
+      });
+    }
+  }
+
+  void _loadUserInfo() {
+    final user = supabase.auth.currentUser;
+    setState(() {
+      _email = user?.email ?? 'unknown@example.com';
+    });
+  }
+
+  void _onTapFavoriteRoutes() {
+    // TODO: Navigate to favorite routes page if implemented
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Favorite Routes (coming soon)')),
+    );
+  }
+
+  void _onTapRecentTrips() {
+    // TODO: Navigate to recent trips page if implemented
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Recent Trips (coming soon)')),
+    );
+  }
+
+  void _onTapReportIssue() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const ReportIssuePage(),
+      ),
+    );
+  }
+
+  void _onTapHelpSupport() {
+    // TODO: Navigate to help & support page
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Help & Support (coming soon)')),
+    );
+  }
+
+  void _onToggleNotifications(bool value) {
+    setState(() {
+      _notificationsEnabled = value;
+    });
+    // TODO: Persist this to Supabase or local storage if needed
+  }
+
+  void _onToggleDarkMode(bool value) {
+    setState(() {
+      _darkModeEnabled = value;
+    });
+    AppTheme.setDarkMode(value);
+    // Optional: persist this preference later (e.g. SharedPreferences or Supabase)
+  }
+
+  Future<void> _onLogoutPressed() async {
+    await supabase.auth.signOut();
+
+    if (!context.mounted) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => const AuthPage()),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final user = supabase.auth.currentUser;
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
     
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        const SizedBox(height: 20),
-        // Profile Header
-        Center(
-          child: Column(
-            children: [
-              CircleAvatar(
-                radius: 50,
-                backgroundColor: Theme.of(context).primaryColor.withOpacity(0.1),
-                child: Icon(
-                  Icons.person,
-                  size: 60,
-                  color: Theme.of(context).primaryColor,
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildProfileHeader(),
+            const SizedBox(height: 24),
+
+            // Only show Account section if not guest
+            if (!widget.isGuest) ...[
+              Text(
+                'Account',
+                style: textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: colorScheme.onSurface,
                 ),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Commuter Profile',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
-              if (user?.email != null) ...[
-                Text(
-                  user!.email!,
-                  style: TextStyle(fontSize: 16, color: Colors.grey[600]),
-                ),
-                const SizedBox(height: 4),
-              ],
+              _ProfileTile(
+                icon: Icons.favorite_outline,
+                iconColor: colorScheme.primary,
+                title: 'Favorite Routes',
+                subtitle: 'Quick access to your saved routes.',
+                onTap: _onTapFavoriteRoutes,
+              ),
+              const SizedBox(height: 8),
+              _ProfileTile(
+                icon: Icons.history,
+                iconColor: colorScheme.primary,
+                title: 'Recent Trips',
+                subtitle: 'View your recent journeys.',
+                onTap: _onTapRecentTrips,
+              ),
+              const SizedBox(height: 24),
               Text(
-                'ID: ${user?.id.substring(0, 8) ?? "Unknown"}',
-                style: TextStyle(fontSize: 14, color: Colors.grey[500]),
+                'Support',
+                style: textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: colorScheme.onSurface,
+                ),
               ),
+              const SizedBox(height: 8),
+              _ProfileTile(
+                icon: Icons.report_gmailerrorred_outlined,
+                iconColor: colorScheme.primary,
+                title: 'Report an Issue',
+                subtitle: 'Let us know about any problems.',
+                onTap: _onTapReportIssue,
+              ),
+              const SizedBox(height: 8),
+              _ProfileTile(
+                icon: Icons.help_outline,
+                iconColor: colorScheme.primary,
+                title: 'Help & Support',
+                subtitle: 'FAQs and contact information.',
+                onTap: _onTapHelpSupport,
+              ),
+              const SizedBox(height: 24),
             ],
-          ),
-        ),
-        const SizedBox(height: 32),
-        
-        // Account Section
-        const Text(
-          'Account',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const SizedBox(height: 12),
-        Card(
-          child: Column(
-            children: [
-              ListTile(
-                leading: const Icon(Icons.favorite, color: Colors.blue),
-                title: const Text('Favorite Routes'),
-                subtitle: const Text('Route 01, Route 02'),
-                trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-                onTap: () {},
+
+            const SizedBox(height: 24),
+            Text(
+              'Settings',
+              style: textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: colorScheme.onSurface,
               ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.history, color: Colors.blue),
-                title: const Text('Recent Trips'),
-                subtitle: const Text('15 trips this month'),
-                trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-                onTap: () {},
+            ),
+            const SizedBox(height: 8),
+            _SwitchTile(
+              icon: Icons.notifications_active_outlined,
+              iconColor: colorScheme.primary,
+              title: 'Notifications',
+              subtitle: 'Get alerts for your routes.',
+              value: _notificationsEnabled,
+              onChanged: _onToggleNotifications,
+            ),
+            const SizedBox(height: 8),
+            _SwitchTile(
+              icon: Icons.dark_mode_outlined,
+              iconColor: colorScheme.primary,
+              title: 'Dark Mode',
+              subtitle: 'Switch to dark theme.',
+              value: _darkModeEnabled,
+              onChanged: _onToggleDarkMode,
+            ),
+
+            const SizedBox(height: 32),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: _onLogoutPressed,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFE53935),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: const Text(
+                  'Log Out',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
-        const SizedBox(height: 20),
-        
-        // Support Section
-        const Text(
-          'Support',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
+      ),
+    );
+  }
+
+  Widget _buildProfileHeader() {
+    final titleColor = Theme.of(context).colorScheme.onSurface;
+    final subtitleColor = Theme.of(context).colorScheme.onSurface.withOpacity(0.8);
+    
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
           ),
-        ),
-        const SizedBox(height: 12),
-        Card(
-          child: Column(
-            children: [
-              ListTile(
-                leading: const Icon(Icons.report_problem, color: Colors.orange),
-                title: const Text('Report an Issue'),
-                subtitle: const Text('Let us know about any problems'),
-                trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => const ReportIssuePage(),
+        ],
+      ),
+      padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              color: const Color(0xFFE0F2F1),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.person,
+              size: 34,
+              color: Color(0xFF00695C),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Commuter Profile',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+              color: titleColor,
+            ),
+          ),
+          const SizedBox(height: 4),
+          // Show "Guest" for guest users, otherwise show email
+          Text(
+            widget.isGuest ? 'Guest' : (_email ?? 'unknown@example.com'),
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: subtitleColor,
+            ),
+          ),
+          // Show guest mode banner if applicable
+          if (widget.isGuest) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.orange.shade200),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.info_outline,
+                    size: 16,
+                    color: Colors.orange.shade700,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Limited access (Guest Mode)',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Colors.black87,
+                      fontWeight: FontWeight.w500,
                     ),
-                  );
-                },
+                  ),
+                ],
               ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.help, color: Colors.blue),
-                title: const Text('Help & Support'),
-                trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-                onTap: () {},
-              ),
-            ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// Reusable profile option tile with arrow
+class _ProfileTile extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _ProfileTile({
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: colorScheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
           ),
-        ),
-        const SizedBox(height: 20),
-        
-        // Settings Section
-        const Text(
-          'Settings',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const SizedBox(height: 12),
-        Card(
-          child: Column(
+        ],
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(
             children: [
-              ListTile(
-                leading: const Icon(Icons.notifications, color: Colors.blue),
-                title: const Text('Notifications'),
-                subtitle: const Text('Get alerts for your routes'),
-                trailing: Switch(
-                  value: true,
-                  onChanged: (value) {},
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: iconColor.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
+                  icon,
+                  size: 20,
+                  color: iconColor,
                 ),
               ),
-              const Divider(height: 1),
-              ListTile(
-                leading: const Icon(Icons.brightness_6, color: Colors.blue),
-                title: const Text('Dark Mode'),
-                subtitle: const Text('Switch to dark theme'),
-                trailing: Switch(
-                  value: false,
-                  onChanged: (value) {},
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: textTheme.bodyLarge?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: colorScheme.onSurface,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: textTheme.bodyMedium?.copyWith(
+                        color: colorScheme.onSurface.withOpacity(0.75),
+                      ),
+                    ),
+                  ],
                 ),
+              ),
+              Icon(
+                Icons.chevron_right,
+                color: colorScheme.onSurface.withOpacity(0.6),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 32),
-        
-        // Logout Button
-        ElevatedButton.icon(
-          onPressed: () async {
-            await supabase.auth.signOut();
-            if (!context.mounted) return;
-            Navigator.of(context).pushReplacement(
-              MaterialPageRoute(builder: (_) => const AuthPage()),
-            );
-          },
-          icon: const Icon(Icons.logout),
-          label: const Text('Log Out'),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.red,
-            foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(vertical: 16),
+      ),
+    );
+  }
+}
+
+// Tile with a switch on the right
+class _SwitchTile extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final String subtitle;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  const _SwitchTile({
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.subtitle,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: colorScheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
           ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: iconColor.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(
+                icon,
+                size: 20,
+                color: iconColor,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: textTheme.bodyLarge?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: colorScheme.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: textTheme.bodyMedium?.copyWith(
+                      color: colorScheme.onSurface.withOpacity(0.75),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Switch(
+              value: value,
+              onChanged: onChanged,
+            ),
+          ],
         ),
-        const SizedBox(height: 20),
-      ],
+      ),
     );
   }
 }

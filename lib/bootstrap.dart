@@ -30,11 +30,15 @@ class _BootstrapState extends State<Bootstrap> {
     if (session == null) {
       target = const AuthPage();
     } else {
+      // Check if current user is guest
+      final user = supabase.auth.currentUser;
+      final isGuest = user?.email == 'guest@smartbus.com';
+      
       final role = await ProfileService.getCurrentUserRole();
       if (role == 'driver') {
         target = const DriverHomePage();
       } else {
-        target = const CommuterHomePage();
+        target = CommuterHomePage(isGuest: isGuest);
       }
     }
 

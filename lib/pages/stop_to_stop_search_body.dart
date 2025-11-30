@@ -274,6 +274,11 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark ? const Color(0xFF1E1E1E) : Colors.white;
+    final labelColor = isDark ? Colors.white : Colors.black87;
+    final hintColor = isDark ? Colors.white70 : Colors.grey.shade600;
+
     return _isLoadingStops
         ? const Center(
             child: Column(
@@ -324,9 +329,9 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                           Expanded(
                             child: Text(
                               'Select your starting stop and destination to find routes',
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: Colors.blue.shade900,
+                              style: const TextStyle(
+                                fontSize: 13,
+                                color: Colors.black87,
                               ),
                             ),
                           ),
@@ -339,11 +344,12 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text(
+                        Text(
                           'From Stop',
                           style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
+                            color: labelColor,
                           ),
                         ),
                         InkWell(
@@ -391,14 +397,34 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                     const SizedBox(height: 8),
                     DropdownButtonFormField<Stop>(
                       value: _selectedFromStop,
-                      hint: const Text('Select starting stop'),
+                      hint: Text(
+                        'Select starting stop',
+                        style: TextStyle(color: hintColor),
+                      ),
                       decoration: InputDecoration(
                         prefixIcon: const Icon(Icons.trip_origin),
+                        filled: true,
+                        fillColor: cardColor,
+                        hintText: 'Select starting stop',
+                        hintStyle: TextStyle(color: hintColor),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        filled: true,
-                        fillColor: Colors.grey[50],
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: Colors.grey.shade600),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(
+                            color: Theme.of(context).colorScheme.primary,
+                            width: 1.5,
+                          ),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
                       ),
                       isExpanded: true,
                       items: _allStops.map((stop) {
@@ -428,22 +454,42 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                     Text(
                       'To Stop',
                       style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.grey[700],
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: labelColor,
                       ),
                     ),
                     const SizedBox(height: 8),
                     DropdownButtonFormField<Stop>(
                       value: _selectedToStop,
-                      hint: const Text('Select destination stop'),
+                      hint: Text(
+                        'Select destination stop',
+                        style: TextStyle(color: hintColor),
+                      ),
                       decoration: InputDecoration(
                         prefixIcon: const Icon(Icons.location_on),
+                        filled: true,
+                        fillColor: cardColor,
+                        hintText: 'Select destination stop',
+                        hintStyle: TextStyle(color: hintColor),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        filled: true,
-                        fillColor: Colors.grey[50],
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: Colors.grey.shade600),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(
+                            color: Theme.of(context).colorScheme.primary,
+                            width: 1.5,
+                          ),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
                       ),
                       isExpanded: true,
                       items: _allStops.map((stop) {
@@ -576,10 +622,22 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
   }
 
   Widget _buildSearchResult(RouteSearchResult result) {
-    return Card(
-      elevation: 3,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark ? const Color(0xFF1E1E1E) : Colors.white;
+    final textPrimary = isDark ? Colors.white : Colors.black87;
+    final textSecondary = isDark ? Colors.white70 : Colors.grey.shade700;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: cardColor,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.15),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -611,9 +669,10 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                 Expanded(
                   child: Text(
                     result.route.name,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
+                      color: textPrimary,
                     ),
                   ),
                 ),
@@ -632,13 +691,13 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                     children: [
                       Row(
                         children: [
-                          Icon(Icons.trip_origin, size: 16, color: Colors.grey[600]),
+                          Icon(Icons.trip_origin, size: 16, color: textSecondary),
                           const SizedBox(width: 6),
                           Text(
                             'From',
                             style: TextStyle(
                               fontSize: 12,
-                              color: Colors.grey[600],
+                              color: textSecondary,
                               fontWeight: FontWeight.w500,
                             ),
                           ),
@@ -647,9 +706,10 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                       const SizedBox(height: 4),
                       Text(
                         result.fromStop.name,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
+                          color: textPrimary,
                         ),
                       ),
                     ],
@@ -671,20 +731,21 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                             'To',
                             style: TextStyle(
                               fontSize: 12,
-                              color: Colors.grey[600],
+                              color: textSecondary,
                               fontWeight: FontWeight.w500,
                             ),
                           ),
                           const SizedBox(width: 6),
-                          Icon(Icons.location_on, size: 16, color: Colors.grey[600]),
+                          Icon(Icons.location_on, size: 16, color: textSecondary),
                         ],
                       ),
                       const SizedBox(height: 4),
                       Text(
                         result.toStop.name,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
+                          color: textPrimary,
                         ),
                         textAlign: TextAlign.end,
                       ),
@@ -752,7 +813,7 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.bold,
-                  color: Colors.grey[700],
+                  color: textPrimary,
                 ),
               ),
               const SizedBox(height: 12),
@@ -767,6 +828,11 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
   }
 
   Widget _buildBusScheduleCard(RouteSearchResult result, BusWithSchedules busWithSchedules) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark ? const Color(0xFF1E1E1E) : Colors.white;
+    final textPrimary = isDark ? Colors.white : Colors.black87;
+    final textSecondary = isDark ? Colors.white70 : Colors.grey.shade700;
+
     // Get departure times as a comma-separated string
     final departureTimes = busWithSchedules.schedules
         .map((schedule) => schedule.departureTime)
@@ -789,7 +855,7 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
         decoration: BoxDecoration(
           color: isSelected 
               ? Theme.of(context).primaryColor.withOpacity(0.1)
-              : Colors.grey[50],
+              : cardColor,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
             color: isSelected 
@@ -815,16 +881,17 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                     children: [
                       Text(
                         'Bus ${busWithSchedules.bus.code}',
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
+                          color: textPrimary,
                         ),
                       ),
                       Text(
                         busWithSchedules.bus.plateNo,
                         style: TextStyle(
                           fontSize: 12,
-                          color: Colors.grey[600],
+                          color: textSecondary,
                         ),
                       ),
                     ],
@@ -832,7 +899,7 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                 ),
                 Icon(
                   Icons.chevron_right,
-                  color: Colors.grey[400],
+                  color: textSecondary,
                   size: 24,
                 ),
               ],
@@ -844,7 +911,7 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(Icons.access_time, size: 16, color: Colors.grey[600]),
+                  Icon(Icons.access_time, size: 16, color: textSecondary),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Column(
@@ -854,7 +921,7 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                           'Departure Times',
                           style: TextStyle(
                             fontSize: 12,
-                            color: Colors.grey[600],
+                            color: textSecondary,
                             fontWeight: FontWeight.w500,
                           ),
                         ),
@@ -863,9 +930,10 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                           departureTimes.isNotEmpty
                               ? departureTimes
                               : 'No schedules available',
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
+                            color: textPrimary,
                           ),
                         ),
                       ],
@@ -879,7 +947,7 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                 'No schedules available',
                 style: TextStyle(
                   fontSize: 12,
-                  color: Colors.grey[600],
+                  color: textSecondary,
                   fontStyle: FontStyle.italic,
                 ),
               ),

@@ -856,13 +856,18 @@ class _RouteSummaryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark ? const Color(0xFF1E1E1E) : Colors.white;
+    final titleColor = isDark ? Colors.white : Colors.black87;
+    final subtitleColor = isDark ? Colors.white70 : Colors.grey.shade700;
+
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: cardColor,
         borderRadius: BorderRadius.circular(18),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.08),
+            color: Colors.black.withOpacity(0.25),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -894,9 +899,10 @@ class _RouteSummaryCard extends StatelessWidget {
               children: [
                 Text(
                   routeName,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
+                    color: titleColor,
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -909,7 +915,10 @@ class _RouteSummaryCard extends StatelessWidget {
                     Flexible(
                       child: Text(
                         origin,
-                        style: const TextStyle(fontSize: 12),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: subtitleColor,
+                        ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -922,7 +931,10 @@ class _RouteSummaryCard extends StatelessWidget {
                     Flexible(
                       child: Text(
                         destination,
-                        style: const TextStyle(fontSize: 12),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: subtitleColor,
+                        ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -1005,6 +1017,11 @@ class _BusBottomCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark ? const Color(0xFF1E1E1E) : Colors.white;
+    final textPrimary = isDark ? Colors.white : Colors.black87;
+    final textSecondary = isDark ? Colors.white70 : Colors.grey.shade700;
+
     final String busCode = bus.code;
     final String plate = bus.plateNo;
     final String status = selectedStatus ?? 'In Service';
@@ -1045,11 +1062,11 @@ class _BusBottomCard extends StatelessWidget {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: cardColor,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.12),
+            color: Colors.black.withOpacity(0.4),
             blurRadius: 12,
             offset: const Offset(0, -4),
           ),
@@ -1078,18 +1095,20 @@ class _BusBottomCard extends StatelessWidget {
               Expanded(
                 child: Text(
                   'Bus $busCode ($plate)',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
+                    color: textPrimary,
                   ),
                 ),
               ),
               if (routeFare != null)
                 Text(
                   routeFare!,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
+                    color: textPrimary,
                   ),
                 ),
             ],
@@ -1105,7 +1124,7 @@ class _BusBottomCard extends StatelessWidget {
                 activeLabel,
                 style: TextStyle(
                   fontSize: 13,
-                  color: Colors.grey.shade800,
+                  color: textSecondary,
                 ),
               ),
               const Spacer(),
@@ -1141,14 +1160,13 @@ class _BusBottomCard extends StatelessWidget {
             const SizedBox(height: 8),
             Row(
               children: [
-                Icon(Icons.access_time, size: 16, color: Colors.grey.shade600),
+                Icon(Icons.access_time, size: 16, color: textSecondary),
                 const SizedBox(width: 4),
                 Text(
                   etaText!,
                   style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.grey.shade700,
-                    fontWeight: FontWeight.w500,
+                    fontSize: 13,
+                    color: textSecondary,
                   ),
                 ),
               ],
@@ -1158,13 +1176,13 @@ class _BusBottomCard extends StatelessWidget {
             const SizedBox(height: 8),
             Row(
               children: [
-                Icon(Icons.update, size: 16, color: Colors.grey.shade600),
+                Icon(Icons.update, size: 16, color: textSecondary),
                 const SizedBox(width: 4),
                 Text(
                   'Last updated: $lastUpdatedFormatted',
                   style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.grey.shade700,
+                    fontSize: 13,
+                    color: textSecondary,
                   ),
                 ),
               ],
