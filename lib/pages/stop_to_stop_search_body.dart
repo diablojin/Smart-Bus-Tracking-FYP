@@ -17,6 +17,7 @@ class StopToStopSearchBody extends StatefulWidget {
 
 class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
   List<Stop> _allStops = [];
+  List<Stop> _toStops = []; // Reordered list for "To" dropdown
   bool _isLoadingStops = true;
   bool _isSearching = false;
   bool _detectingLocation = false;
@@ -48,6 +49,7 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
       
       setState(() {
         _allStops = stops;
+        _toStops = List.of(stops); // Initialize with all stops
         _isLoadingStops = false;
       });
     } catch (e) {
@@ -180,6 +182,38 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
     }
   }
 
+  /// Reorder the "To" stops list based on the selected "From" stop's route code
+  /// Stops with the same route code as the "From" stop will appear at the top
+  void _reorderToStops() {
+    if (_selectedFromStop == null) {
+      // No From stop selected, show all stops in default order
+      _toStops = List.of(_allStops);
+      return;
+    }
+
+    final selectedRouteCode = _selectedFromStop!.routeCode;
+
+    // If the selected From stop doesn't have a route code, keep default order
+    if (selectedRouteCode == null || selectedRouteCode.isEmpty) {
+      _toStops = List.of(_allStops);
+      return;
+    }
+
+    // Sort stops: same route code first, then others, both alphabetically by name
+    _toStops = List.of(_allStops)
+      ..sort((a, b) {
+        final aMatch = a.routeCode == selectedRouteCode ? 0 : 1;
+        final bMatch = b.routeCode == selectedRouteCode ? 0 : 1;
+
+        if (aMatch != bMatch) {
+          return aMatch - bMatch; // Same route stops come first
+        }
+
+        // Within each group, sort alphabetically by name
+        return a.name.compareTo(b.name);
+      });
+  }
+
   /// Use current location to auto-select the From stop
   Future<void> _useCurrentLocationAsFrom() async {
     setState(() {
@@ -231,6 +265,7 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
         _selectedFromStop = nearest;
         _detectingLocation = false;
         _searchResult = null; // Clear previous results
+        _reorderToStops(); // Reorder To stops based on selected From stop
       });
 
       // Show confirmation to user
@@ -445,6 +480,7 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                           _searchResult = null;
                           _selectedBusForTracking = null; // Clear selection when route changes
                           _selectedRouteResult = null;
+                          _reorderToStops(); // Reorder To stops based on selected From stop
                         });
                       },
                     ),
@@ -492,7 +528,7 @@ class _StopToStopSearchBodyState extends State<StopToStopSearchBody> {
                         ),
                       ),
                       isExpanded: true,
-                      items: _allStops.map((stop) {
+                      items: _toStops.map((stop) {
                         return DropdownMenuItem<Stop>(
                           value: stop,
                           child: Text(

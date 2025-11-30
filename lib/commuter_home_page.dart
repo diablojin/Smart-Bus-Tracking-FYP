@@ -5,6 +5,8 @@ import 'app_theme.dart';
 import 'auth_page.dart';
 import 'commuter_route_page.dart';
 import 'pages/commuter/report_page.dart';
+import 'models/announcement.dart';
+import 'services/announcement_service.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -265,30 +267,8 @@ class _HomeTabState extends State<_HomeTab> {
             ),
             const SizedBox(height: 12),
 
-            // Example update cards (static for now; you can bind to real data later)
-            const _UpdateCard(
-              icon: Icons.notifications_active,
-              iconBgColor: Color(0xFFE3F2FD),
-              iconColor: Color(0xFF1565C0),
-              title: 'Service Alert',
-              subtitle: 'Route 750 frequency increased for peak hours.',
-            ),
-            const SizedBox(height: 10),
-            const _UpdateCard(
-              icon: Icons.build,
-              iconBgColor: Color(0xFFFFF3E0),
-              iconColor: Color(0xFFEF6C00),
-              title: 'Maintenance',
-              subtitle: 'MRT feeder bus TB15 temporarily rerouted.',
-            ),
-            const SizedBox(height: 10),
-            const _UpdateCard(
-              icon: Icons.system_update_alt,
-              iconBgColor: Color(0xFFF3E5F5),
-              iconColor: Color(0xFF6A1B9A),
-              title: 'App Update',
-              subtitle: 'New Dark Mode available for night travellers.',
-            ),
+            // Dynamic announcements from Supabase
+            const LatestUpdatesSection(),
             const SizedBox(height: 24),
           ],
         ),
@@ -297,26 +277,110 @@ class _HomeTabState extends State<_HomeTab> {
   }
 }
 
-// Simple reusable card for "Latest Updates"
-class _UpdateCard extends StatelessWidget {
-  final IconData icon;
-  final Color iconBgColor;
-  final Color iconColor;
-  final String title;
-  final String subtitle;
+/// Widget that fetches and displays announcements from Supabase in real-time.
+/// Uses StreamBuilder to automatically update when announcements change.
+class LatestUpdatesSection extends StatelessWidget {
+  const LatestUpdatesSection({super.key});
 
-  const _UpdateCard({
-    required this.icon,
-    required this.iconBgColor,
-    required this.iconColor,
-    required this.title,
-    required this.subtitle,
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<Announcement>>(
+      stream: AnnouncementService.commuterAnnouncementsStream(),
+      builder: (context, snapshot) {
+        // Show loading indicator while waiting for initial data
+        if (snapshot.hasData == false) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(vertical: 20),
+            child: Center(
+              child: CircularProgressIndicator(),
+            ),
+          );
+        }
+
+        final announcements = snapshot.data ?? [];
+
+        // Show empty state if no announcements
+        if (announcements.isEmpty) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 20),
+            child: Text(
+              'No updates at the moment.',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                  ),
+            ),
+          );
+        }
+
+        // Display announcement cards
+        return Column(
+          children: [
+            for (int i = 0; i < announcements.length; i++) ...[
+              _AnnouncementCard(announcement: announcements[i]),
+              if (i < announcements.length - 1) const SizedBox(height: 10),
+            ],
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// Card widget for displaying a single announcement.
+/// Theme-aware and supports both light and dark modes.
+class _AnnouncementCard extends StatelessWidget {
+  final Announcement announcement;
+
+  const _AnnouncementCard({
+    required this.announcement,
   });
+
+  /// Maps announcement category to an appropriate icon.
+  IconData _getIconForCategory(String category) {
+    switch (category.toLowerCase()) {
+      case 'service alert':
+        return Icons.directions_bus;
+      case 'maintenance':
+        return Icons.build;
+      case 'app update':
+        return Icons.smartphone;
+      default:
+        return Icons.info;
+    }
+  }
+
+  /// Gets theme-aware icon colors based on category.
+  /// Returns a tuple of (backgroundColor, iconColor) that adapts to light/dark mode.
+  (Color, Color) _getColorsForCategory(BuildContext context, String category) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final isDark = colorScheme.brightness == Brightness.dark;
+
+    switch (category.toLowerCase()) {
+      case 'service alert':
+        return isDark
+            ? (const Color(0xFF1E3A5F).withOpacity(0.3), const Color(0xFF64B5F6))
+            : (const Color(0xFFE3F2FD), const Color(0xFF1565C0));
+      case 'maintenance':
+        return isDark
+            ? (const Color(0xFF5D4037).withOpacity(0.3), const Color(0xFFFFB74D))
+            : (const Color(0xFFFFF3E0), const Color(0xFFEF6C00));
+      case 'app update':
+        return isDark
+            ? (const Color(0xFF4A148C).withOpacity(0.3), const Color(0xFFBA68C8))
+            : (const Color(0xFFF3E5F5), const Color(0xFF6A1B9A));
+      default:
+        return isDark
+            ? (colorScheme.primary.withOpacity(0.2), colorScheme.primary)
+            : (colorScheme.primary.withOpacity(0.1), colorScheme.primary);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
+    final icon = _getIconForCategory(announcement.category);
+    final (iconBgColor, iconColor) = _getColorsForCategory(context, announcement.category);
 
     return Container(
       decoration: BoxDecoration(
@@ -351,7 +415,7 @@ class _UpdateCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  title,
+                  announcement.category,
                   style: textTheme.bodyLarge?.copyWith(
                     fontWeight: FontWeight.w600,
                     color: colorScheme.onSurface,
@@ -359,11 +423,20 @@ class _UpdateCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  subtitle,
+                  announcement.title,
                   style: textTheme.bodyMedium?.copyWith(
                     color: colorScheme.onSurface.withOpacity(0.75),
                   ),
                 ),
+                if (announcement.subtitle != null && announcement.subtitle!.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    announcement.subtitle!,
+                    style: textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurface.withOpacity(0.6),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
