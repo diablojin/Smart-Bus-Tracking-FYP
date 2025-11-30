@@ -31,7 +31,7 @@ class _DriverStatusDashboardPageState extends State<DriverStatusDashboardPage> {
   StreamSubscription<Position>? _positionSub;
   Timer? _updateTimer;
 
-  String _status = 'In Service';
+  String _status = 'Inactive';
   DateTime? _lastUpdateTime;
 
   @override
@@ -113,6 +113,11 @@ class _DriverStatusDashboardPageState extends State<DriverStatusDashboardPage> {
       return;
     }
 
+    // Set status to "In Service" when starting trip
+    setState(() {
+      _status = 'In Service';
+    });
+
     // Location permission
     final permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied ||
@@ -179,7 +184,10 @@ class _DriverStatusDashboardPageState extends State<DriverStatusDashboardPage> {
     _mqttService.disconnect();
     await WakelockPlus.disable();
 
-    setState(() => _isTripActive = false);
+    setState(() {
+      _isTripActive = false;
+      _status = 'Inactive';
+    });
     
     // Optionally pop back to Home after confirmation
     if (!mounted) return;
@@ -249,6 +257,8 @@ class _DriverStatusDashboardPageState extends State<DriverStatusDashboardPage> {
         return Colors.blue;
       case 'Breakdown':
         return Colors.red;
+      case 'Inactive':
+        return Colors.grey;
       default:
         return Colors.grey;
     }
@@ -388,50 +398,53 @@ class _DriverStatusDashboardPageState extends State<DriverStatusDashboardPage> {
             ),
             const SizedBox(height: 24),
 
-            // Status Buttons Grid (2x2)
-            GridView.count(
-              crossAxisCount: 2,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              mainAxisSpacing: 12,
-              crossAxisSpacing: 12,
-              childAspectRatio: 1.1,
-              children: [
-                _StatusButton(
-                  title: 'In Service',
-                  subtitle: 'Bus operating normally',
-                  icon: Icons.check_circle,
-                  color: Colors.green,
-                  isSelected: _status == 'In Service',
-                  onTap: () => _updateStatus('In Service'),
-                ),
-                _StatusButton(
-                  title: 'Delayed',
-                  subtitle: 'Traffic or schedule delay',
-                  icon: Icons.access_time_filled,
-                  color: Colors.orange,
-                  isSelected: _status == 'Delayed',
-                  onTap: () => _updateStatus('Delayed'),
-                ),
-                _StatusButton(
-                  title: 'Full Capacity',
-                  subtitle: 'No more passengers allowed',
-                  icon: Icons.groups_rounded,
-                  color: Colors.blue,
-                  isSelected: _status == 'Full Capacity',
-                  onTap: () => _updateStatus('Full Capacity'),
-                ),
-                _StatusButton(
-                  title: 'Breakdown',
-                  subtitle: 'Unable to continue service',
-                  icon: Icons.warning_rounded,
-                  color: Colors.red,
-                  isSelected: _status == 'Breakdown',
-                  onTap: () => _updateStatus('Breakdown'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 32),
+            // Status Buttons Grid (2x2) - Only show when trip is active
+            if (_isTripActive) ...[
+              GridView.count(
+                crossAxisCount: 2,
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                mainAxisSpacing: 12,
+                crossAxisSpacing: 12,
+                childAspectRatio: 1.1,
+                children: [
+                  _StatusButton(
+                    title: 'In Service',
+                    subtitle: 'Bus operating normally',
+                    icon: Icons.check_circle,
+                    color: Colors.green,
+                    isSelected: _status == 'In Service',
+                    onTap: () => _updateStatus('In Service'),
+                  ),
+                  _StatusButton(
+                    title: 'Delayed',
+                    subtitle: 'Traffic or schedule delay',
+                    icon: Icons.access_time_filled,
+                    color: Colors.orange,
+                    isSelected: _status == 'Delayed',
+                    onTap: () => _updateStatus('Delayed'),
+                  ),
+                  _StatusButton(
+                    title: 'Full Capacity',
+                    subtitle: 'No more passengers allowed',
+                    icon: Icons.groups_rounded,
+                    color: Colors.blue,
+                    isSelected: _status == 'Full Capacity',
+                    onTap: () => _updateStatus('Full Capacity'),
+                  ),
+                  _StatusButton(
+                    title: 'Breakdown',
+                    subtitle: 'Unable to continue service',
+                    icon: Icons.warning_rounded,
+                    color: Colors.red,
+                    isSelected: _status == 'Breakdown',
+                    onTap: () => _updateStatus('Breakdown'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 32),
+            ] else
+              const SizedBox(height: 32),
 
             // Trip Control Button
             SizedBox(
